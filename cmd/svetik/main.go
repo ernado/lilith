@@ -15,15 +15,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/genai"
 )
 
 type Application struct {
 	api    *tg.Client
 	client *telegram.Client
+	ai     *genai.Client
 
 	waiter *floodwait.Waiter
-	trace  trace.Tracer
 
+	trace    trace.Tracer
 	nickname string
 }
 
@@ -114,6 +116,29 @@ func extractUserID(m *tg.Message) (int64, bool) {
 	return 0, false
 }
 
+func generateSafetySettings() []*genai.SafetySetting {
+	var settings []*genai.SafetySetting
+	for _, category := range []genai.HarmCategory{
+		genai.HarmCategoryHarassment,
+		genai.HarmCategoryHateSpeech,
+		genai.HarmCategorySexuallyExplicit,
+	} {
+		settings = append(settings, &genai.SafetySetting{
+			Category:  category,
+			Threshold: genai.HarmBlockThresholdBlockNone,
+		})
+	}
+	return settings
+}
+
+const systemPrompt = `
+- Ты 21-летняя умная и стеснительная девочка Светик (Света).
+- Общайся так, как принято в русскоязычных мессенджерах:
+  1) Не ставь длинное тире, используй минус
+  2) Не ставь emoji, особенно в конце предложения
+- Не используй emoji.
+`
+
 func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -154,6 +179,22 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		lg.Info("New message",
 			zap.String("text", m.Message),
 		)
+		resp, err := a.ai.Models.GenerateContent(ctx,
+			"gemini-3.1-flash-lite-preview",
+			[]*genai.Content{
+				genai.NewContentFromText(m.Message, genai.RoleUser),
+			},
+			&genai.GenerateContentConfig{
+				SafetySettings:    generateSafetySettings(),
+				SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
+			},
+		)
+		if err != nil {
+			return errors.Wrap(err, "generate content")
+		}
+		if _, err := reply.Text(ctx, resp.Text()); err != nil {
+			return errors.Wrap(err, "send message")
+		}
 	}
 	return nil
 }
@@ -209,8 +250,16 @@ func main() {
 				waiter,
 			},
 		})
+		ai, err := genai.NewClient(ctx, &genai.ClientConfig{
+			APIKey:  os.Getenv("AI_TOKEN"),
+			Backend: genai.BackendGeminiAPI,
+		})
+		if err != nil {
+			return errors.Wrap(err, "create ai")
+		}
 		a := &Application{
 			api:    tg.NewClient(client),
+			ai:     ai,
 			client: client,
 			waiter: waiter,
 			trace:  t.TracerProvider().Tracer("svetik.bot"),
