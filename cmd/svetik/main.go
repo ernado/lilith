@@ -16,6 +16,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/genai"
+
+	"svetik/internal/prompt"
 )
 
 type Application struct {
@@ -131,13 +133,6 @@ func generateSafetySettings() []*genai.SafetySetting {
 	return settings
 }
 
-const systemPrompt = `
-- Ты 21-летняя умная и стеснительная девочка Светик (Света).
-- Общайся так, как принято в русскоязычных мессенджерах:
-  1) Не ставь длинное тире, используй минус
-  2) Не ставь emoji, особенно в конце предложения
-`
-
 func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -182,7 +177,7 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			},
 			&genai.GenerateContentConfig{
 				SafetySettings:    generateSafetySettings(),
-				SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
+				SystemInstruction: genai.NewContentFromText(prompt.Character, genai.RoleUser),
 			},
 		)
 		if err != nil {
