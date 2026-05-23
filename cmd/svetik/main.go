@@ -176,9 +176,6 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			return errors.Wrap(err, "send message")
 		}
 	default:
-		lg.Info("New message",
-			zap.String("text", m.Message),
-		)
 		resp, err := a.ai.Models.GenerateContent(ctx,
 			"gemini-3.1-flash-lite-preview",
 			[]*genai.Content{
