@@ -2,28 +2,37 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
+	"github.com/ernado/svetik"
 	"github.com/go-faster/errors"
 	"github.com/go-faster/sdk/app"
 	"github.com/go-faster/sdk/zctx"
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/tg"
 	"github.com/revrost/go-openrouter"
+	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"svetik/internal/prompt"
+	"github.com/ernado/svetik/internal/db"
+	"github.com/ernado/svetik/internal/prompt"
 )
 
 type Application struct {
 	api    *tg.Client
 	client *telegram.Client
 	ai     *openrouter.Client
+	db     svetik.DB
 
 	waiter   *floodwait.Waiter
 	trace    trace.Tracer
@@ -120,8 +129,9 @@ func extractUserID(m *tg.Message) (int64, bool) {
 func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
+
 	m, ok := u.Message.(*tg.Message)
-	if !ok || m.Out {
+	if !ok {
 		return nil
 	}
 	var (
@@ -129,6 +139,7 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		reply  = sender.Reply(e, u)
 		lg     = zctx.From(ctx).With(zap.Int("msg.id", m.ID))
 	)
+
 	userID, ok := extractUserID(m)
 	if !ok {
 		if _, err := reply.Text(ctx, "Invalid"); err != nil {
@@ -148,18 +159,74 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		zap.Int64("user_id", user.ID),
 	)
 
+	var chatFull *tg.ChatFull
+
 	for _, chat := range e.Chats {
 		full, err := a.api.MessagesGetFullChat(ctx, chat.ID)
 		if err != nil {
 			lg.Warn("Failed to get full chat", zap.Int64("chat_id", chat.ID), zap.Error(err))
 			continue
 		}
-		if chatFull, ok := full.FullChat.(*tg.ChatFull); ok {
-			lg.Info("Full chat info",
-				zap.Int64("chat_id", chatFull.ID),
-				zap.String("about", chatFull.About),
-			)
+
+		if v, ok := full.FullChat.(*tg.ChatFull); ok {
+			chatFull = v
 		}
+
+		break
+	}
+
+	if chatFull != nil {
+		lg.Info("Full chat info",
+			zap.Int64("chat_id", chatFull.ID),
+			zap.String("about", chatFull.About),
+		)
+		if err := a.db.UpsertChat(ctx, svetik.Chat{
+			ID:   chatFull.ID,
+			Info: chatFull.About,
+		}); err != nil {
+			lg.Warn("Failed to upsert chat", zap.Int64("chat_id", chatFull.ID), zap.Error(err))
+		}
+
+		var (
+			replyToID     *int64
+			replyToText   *string
+			replyToMyself *bool
+		)
+
+		if replyHeader, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
+			id := int64(replyHeader.ReplyToMsgID)
+
+			replyToID = &id
+
+			if replyHeader.QuoteText != "" {
+				replyToText = &replyHeader.QuoteText
+			}
+
+			msg, err := a.db.GetMessage(ctx, chatFull.ID, int64(replyHeader.ReplyToMsgID))
+			if err != nil {
+				return errors.Wrap(err, "get message")
+			}
+
+			if msg.IsMyself {
+				replyToMyself = &msg.IsMyself
+			}
+		}
+
+		if err := a.db.SaveMessage(ctx, svetik.Message{
+			ChatID:        chatFull.ID,
+			MessageID:     int64(m.ID),
+			Text:          m.Message,
+			IsMyself:      m.Out,
+			ReplyToID:     replyToID,
+			ReplyToText:   replyToText,
+			ReplyToMyself: replyToMyself,
+		}); err != nil {
+			lg.Error("save message", zap.Error(err))
+		}
+	}
+
+	if m.Out {
+		return nil
 	}
 
 	switch m.Message {
@@ -178,10 +245,25 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		if err != nil {
 			return errors.Wrap(err, "generate content")
 		}
-		if _, err := reply.Text(ctx, resp.Choices[0].Message.Content.Text); err != nil {
-			return errors.Wrap(err, "send message")
+		replyText := resp.Choices[0].Message.Content.Text
+		replyUpdate, err := reply.Text(ctx, replyText)
+		if err != nil {
+			return errors.Wrap(err, "send reply")
+		}
+
+		if v, ok := replyUpdate.(*tg.UpdateShortSentMessage); ok && chatFull != nil {
+			if err := a.db.SaveMessage(ctx, svetik.Message{
+				ChatID:    chatFull.ID,
+				MessageID: int64(v.ID),
+				Text:      replyText,
+				ReplyToID: svetik.T(int64(m.ID)),
+				IsMyself:  true,
+			}); err != nil {
+				lg.Error("save sent message", zap.Error(err))
+			}
 		}
 	}
+
 	return nil
 }
 
@@ -207,51 +289,135 @@ func (j *jsonSessionStorage) StoreSession(_ context.Context, data []byte) error 
 
 var _ telegram.SessionStorage = (*jsonSessionStorage)(nil)
 
-func main() {
-	app.Run(func(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
-		botToken := os.Getenv("BOT_TOKEN")
-		if botToken == "" {
-			return errors.New("BOT_TOKEN is empty")
-		}
-		appID, err := strconv.Atoi(os.Getenv("APP_ID"))
-		if err != nil {
-			return errors.Wrap(err, "parse APP_ID")
-		}
-		appHash := os.Getenv("APP_HASH")
-		if appHash == "" {
-			return errors.New("APP_HASH is empty")
-		}
-		waiter := floodwait.NewWaiter()
-		dispatcher := tg.NewUpdateDispatcher()
-		sessionStorage, err := newJSONSessionStorage("session.json")
-		if err != nil {
-			return errors.Wrap(err, "create session storage")
-		}
-		client := telegram.NewClient(appID, appHash, telegram.Options{
-			Logger:         zctx.From(ctx).Named("tg"),
-			TracerProvider: t.TracerProvider(),
-			SessionStorage: sessionStorage,
-			UpdateHandler:  dispatcher,
-			Middlewares: []telegram.Middleware{
-				waiter,
+func Root() *cobra.Command {
+	var forceMigration bool
+	cmd := &cobra.Command{
+		Use: "svetik",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			databaseURI := "postgres://postgres:postgres@localhost:5432/svetik?sslmode=disable"
+
+			{
+				// Database migrations.
+				d, err := iofs.New(db.Migrations, "_migrations")
+				if err != nil {
+					return errors.Wrap(err, "create iofs driver")
+				}
+
+				uri := strings.ReplaceAll(databaseURI, "postgres://", "pgx5://")
+				m, err := migrate.NewWithSourceInstance("iofs", d, uri)
+				if err != nil {
+					return errors.Wrap(err, "create migrate")
+				}
+
+				if forceMigration {
+					// Only migrate and return.
+					version, dirty, err := m.Version()
+					if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
+						return errors.Wrap(err, "get version")
+					}
+
+					if dirty {
+						if err := m.Force(int(version)); err != nil {
+							return errors.Wrap(err, "force version")
+						}
+
+						fmt.Printf("Forced dirty migration to version %d\n", version)
+					} else {
+						fmt.Printf("Nothing to do anyway\n")
+					}
+
+					return nil
+				}
+
+				if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+					return errors.Wrap(err, "migrate up")
+				} else {
+					if errors.Is(err, migrate.ErrNoChange) {
+						fmt.Println("No migrations to apply")
+					} else {
+						fmt.Println("Migrations applied successfully")
+					}
+				}
+
+				sourceErr, dbErr := m.Close()
+				if sourceErr != nil {
+					return errors.Wrap(sourceErr, "close source")
+				}
+				if dbErr != nil {
+					return errors.Wrap(dbErr, "close db")
+				}
+			}
+
+			app.Run(func(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
+				botToken := os.Getenv("BOT_TOKEN")
+				if botToken == "" {
+					return errors.New("BOT_TOKEN is empty")
+				}
+				appID, err := strconv.Atoi(os.Getenv("APP_ID"))
+				if err != nil {
+					return errors.Wrap(err, "parse APP_ID")
+				}
+				appHash := os.Getenv("APP_HASH")
+				if appHash == "" {
+					return errors.New("APP_HASH is empty")
+				}
+				waiter := floodwait.NewWaiter()
+				dispatcher := tg.NewUpdateDispatcher()
+				sessionStorage, err := newJSONSessionStorage("session.json")
+				if err != nil {
+					return errors.Wrap(err, "create session storage")
+				}
+				client := telegram.NewClient(appID, appHash, telegram.Options{
+					Logger:         zctx.From(ctx).Named("tg"),
+					TracerProvider: t.TracerProvider(),
+					SessionStorage: sessionStorage,
+					UpdateHandler:  dispatcher,
+					Middlewares: []telegram.Middleware{
+						waiter,
+					},
+				})
+				ai := openrouter.NewClient(os.Getenv("AI_TOKEN"))
+				databaseConnection, err := db.Open(ctx, databaseURI, t)
+				if err != nil {
+					return errors.Wrap(err, "open database")
+				}
+				if err := databaseConnection.Ping(ctx); err != nil {
+					return errors.Wrap(err, "ping database")
+				}
+
+				a := &Application{
+					api:    tg.NewClient(client),
+					ai:     ai,
+					db:     db.New(databaseConnection),
+					client: client,
+					waiter: waiter,
+					trace:  t.TracerProvider().Tracer("svetik.bot"),
+				}
+				dispatcher.OnChannelParticipant(a.onChannelParticipant)
+				dispatcher.OnNewMessage(a.onNewMessage)
+				return a.Run(ctx)
 			},
-		})
-		ai := openrouter.NewClient(os.Getenv("AI_TOKEN"))
-		a := &Application{
-			api:    tg.NewClient(client),
-			ai:     ai,
-			client: client,
-			waiter: waiter,
-			trace:  t.TracerProvider().Tracer("svetik.bot"),
-		}
-		dispatcher.OnChannelParticipant(a.onChannelParticipant)
-		dispatcher.OnNewMessage(a.onNewMessage)
-		return a.Run(ctx)
-	},
-		app.WithZapConfig(func() zap.Config {
-			cfg := zap.NewProductionConfig()
-			cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-			return cfg
-		}()),
-	)
+				app.WithZapConfig(func() zap.Config {
+					cfg := zap.NewProductionConfig()
+					cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+					return cfg
+				}()),
+			)
+
+			return nil
+		},
+	}
+
+	f := cmd.Flags()
+	f.BoolVarP(&forceMigration, "force-migration", "f", false, "force migration")
+
+	return cmd
+}
+
+func main() {
+	root := Root()
+	if err := root.Execute(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		os.Exit(1)
+	}
 }
