@@ -12,10 +12,10 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/tg"
+	"github.com/revrost/go-openrouter"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"google.golang.org/genai"
 
 	"svetik/internal/prompt"
 )
@@ -23,10 +23,9 @@ import (
 type Application struct {
 	api    *tg.Client
 	client *telegram.Client
-	ai     *genai.Client
+	ai     *openrouter.Client
 
-	waiter *floodwait.Waiter
-
+	waiter   *floodwait.Waiter
 	trace    trace.Tracer
 	nickname string
 }
@@ -118,21 +117,6 @@ func extractUserID(m *tg.Message) (int64, bool) {
 	return 0, false
 }
 
-func generateSafetySettings() []*genai.SafetySetting {
-	var settings []*genai.SafetySetting
-	for _, category := range []genai.HarmCategory{
-		genai.HarmCategoryHarassment,
-		genai.HarmCategoryHateSpeech,
-		genai.HarmCategorySexuallyExplicit,
-	} {
-		settings = append(settings, &genai.SafetySetting{
-			Category:  category,
-			Threshold: genai.HarmBlockThresholdBlockNone,
-		})
-	}
-	return settings
-}
-
 func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -164,26 +148,37 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		zap.Int64("user_id", user.ID),
 	)
 
+	for _, chat := range e.Chats {
+		full, err := a.api.MessagesGetFullChat(ctx, chat.ID)
+		if err != nil {
+			lg.Warn("Failed to get full chat", zap.Int64("chat_id", chat.ID), zap.Error(err))
+			continue
+		}
+		if chatFull, ok := full.FullChat.(*tg.ChatFull); ok {
+			lg.Info("Full chat info",
+				zap.Int64("chat_id", chatFull.ID),
+				zap.String("about", chatFull.About),
+			)
+		}
+	}
+
 	switch m.Message {
 	case "/start", "/start@" + a.nickname:
 		if _, err := reply.Text(ctx, "Hello, "+user.FirstName+"!"); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	default:
-		resp, err := a.ai.Models.GenerateContent(ctx,
-			"gemini-3.1-flash-lite-preview",
-			[]*genai.Content{
-				genai.NewContentFromText(m.Message, genai.RoleUser),
+		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
+			Model: "deepseek/deepseek-v4-flash",
+			Messages: []openrouter.ChatCompletionMessage{
+				openrouter.SystemMessage(prompt.Character),
+				openrouter.UserMessage(m.Message),
 			},
-			&genai.GenerateContentConfig{
-				SafetySettings:    generateSafetySettings(),
-				SystemInstruction: genai.NewContentFromText(prompt.Character, genai.RoleUser),
-			},
-		)
+		})
 		if err != nil {
 			return errors.Wrap(err, "generate content")
 		}
-		if _, err := reply.Text(ctx, resp.Text()); err != nil {
+		if _, err := reply.Text(ctx, resp.Choices[0].Message.Content.Text); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	}
@@ -241,13 +236,7 @@ func main() {
 				waiter,
 			},
 		})
-		ai, err := genai.NewClient(ctx, &genai.ClientConfig{
-			APIKey:  os.Getenv("AI_TOKEN"),
-			Backend: genai.BackendGeminiAPI,
-		})
-		if err != nil {
-			return errors.Wrap(err, "create ai")
-		}
+		ai := openrouter.NewClient(os.Getenv("AI_TOKEN"))
 		a := &Application{
 			api:    tg.NewClient(client),
 			ai:     ai,
