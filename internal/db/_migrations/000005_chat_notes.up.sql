@@ -1,0 +1,8 @@
+CREATE TABLE chat_notes
+(
+    id      BIGSERIAL PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    text    TEXT   NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chat (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+

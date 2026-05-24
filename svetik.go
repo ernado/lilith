@@ -8,6 +8,13 @@ type Chat struct {
 	Info string
 }
 
+// ChatNote represents a note attached to a chat.
+type ChatNote struct {
+	ID     int64  `json:"id"`
+	ChatID int64  `json:"chat_id"`
+	Text   string `json:"text"`
+}
+
 // ChatMember represents a member of a Telegram chat.
 type ChatMember struct {
 	ChatID    int64  `json:"chat_id"`

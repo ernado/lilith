@@ -33,3 +33,12 @@
 | is_admin   | BOOLEAN | NOT NULL                                      |
 | is_creator | BOOLEAN | NOT NULL                                      |
 | rank       | TEXT    | NOT NULL                                      |
+
+## chat_notes
+
+| Column  | Type      | Constraints                                   |
+|---------|-----------|-----------------------------------------------|
+| id      | BIGSERIAL | PRIMARY KEY                                   |
+| chat_id | BIGINT    | NOT NULL, FK → chat(id) ON DELETE CASCADE     |
+| text    | TEXT      | NOT NULL                                      |
+

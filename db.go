@@ -11,4 +11,7 @@ type DB interface {
 	GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]Message, error)
 	UpsertChatMember(ctx context.Context, m ChatMember) error
 	GetChatMember(ctx context.Context, chatID, userID int64) (*ChatMember, error)
+	AddChatNote(ctx context.Context, chatID int64, text string) (*ChatNote, error)
+	GetChatNotes(ctx context.Context, chatID int64) ([]ChatNote, error)
+	DeleteChatNote(ctx context.Context, chatID, noteID int64) error
 }
