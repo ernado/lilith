@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ernado/svetik"
@@ -30,6 +31,9 @@ import (
 	"github.com/ernado/svetik/internal/prompt"
 )
 
+// channelParticipantsTTL is the minimum interval between participant list refreshes.
+const channelParticipantsTTL = 10 * time.Minute
+
 type Application struct {
 	api    *tg.Client
 	client *telegram.Client
@@ -41,6 +45,10 @@ type Application struct {
 
 	waiter *floodwait.Waiter
 	trace  trace.Tracer
+
+	// channelParticipantsMu guards channelParticipantsFetchedAt.
+	channelParticipantsMu        sync.Mutex
+	channelParticipantsFetchedAt map[int64]time.Time
 }
 
 func (a *Application) Run(ctx context.Context) error {
@@ -198,7 +206,7 @@ func (a *Application) resolveRegularChat(ctx context.Context, chatID int64, user
 }
 
 func (a *Application) resolveChannel(ctx context.Context, channel *tg.Channel, userID int64) (*chatContext, error) {
-	if err := a.fetchChannelParticipants(ctx, channel); err != nil {
+	if err := a.fetchChannelParticipantsCached(ctx, channel); err != nil {
 		return nil, errors.Wrap(err, "fetch channel participants")
 	}
 
@@ -218,6 +226,29 @@ func (a *Application) resolveChannel(ctx context.Context, channel *tg.Channel, u
 	}
 
 	return cc, nil
+}
+
+// fetchChannelParticipantsCached fetches channel participants at most once per channelParticipantsTTL.
+func (a *Application) fetchChannelParticipantsCached(ctx context.Context, channel *tg.Channel) error {
+	now := time.Now()
+
+	a.channelParticipantsMu.Lock()
+	fetchedAt, ok := a.channelParticipantsFetchedAt[channel.ID]
+	if ok && now.Sub(fetchedAt) < channelParticipantsTTL {
+		a.channelParticipantsMu.Unlock()
+		return nil
+	}
+	a.channelParticipantsMu.Unlock()
+
+	if err := a.fetchChannelParticipants(ctx, channel); err != nil {
+		return err
+	}
+
+	a.channelParticipantsMu.Lock()
+	a.channelParticipantsFetchedAt[channel.ID] = now
+	a.channelParticipantsMu.Unlock()
+
+	return nil
 }
 
 func (a *Application) resolveChatContext(ctx context.Context, e tg.Entities, userID int64) (*chatContext, error) {
@@ -383,10 +414,18 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			return errors.Wrap(err, "get last messages")
 		}
 
+		// memberCache avoids repeated DB lookups for the same user within one request.
+		memberCache := make(map[int64]*lilith.ChatMember)
+
 		for _, msg := range lastMessages {
-			member, err := a.db.GetChatMember(ctx, msg.ChatID, msg.UserID)
-			if err != nil {
-				return errors.Wrap(err, "get member")
+			member, ok := memberCache[msg.UserID]
+			if !ok {
+				member, err = a.db.GetChatMember(ctx, msg.ChatID, msg.UserID)
+				if err != nil {
+					return errors.Wrap(err, "get member")
+				}
+
+				memberCache[msg.UserID] = member
 			}
 
 			dialogContext := lilith.Context{
@@ -726,13 +765,14 @@ func Root() *cobra.Command {
 				}
 
 				a := &Application{
-					api:    tg.NewClient(client),
-					ai:     ai,
-					model:  aiModel,
-					db:     db.New(databaseConnection),
-					client: client,
-					waiter: waiter,
-					trace:  t.TracerProvider().Tracer("svetik.bot"),
+					api:                          tg.NewClient(client),
+					ai:                           ai,
+					model:                        aiModel,
+					db:                           db.New(databaseConnection),
+					client:                       client,
+					waiter:                       waiter,
+					trace:                        t.TracerProvider().Tracer("svetik.bot"),
+					channelParticipantsFetchedAt: make(map[int64]time.Time),
 				}
 				dispatcher.OnChannelParticipant(a.onChannelParticipant)
 				dispatcher.OnNewMessage(a.onNewMessage)
