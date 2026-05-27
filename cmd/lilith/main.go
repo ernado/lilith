@@ -467,7 +467,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 			Model:     a.model,
 			Messages:  dialog,
-			MaxTokens: 300,
+			MaxTokens: 450,
 		})
 		close(done)
 
