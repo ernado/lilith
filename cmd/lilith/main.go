@@ -291,6 +291,12 @@ func (a *Application) isNotesNeeded(ctx context.Context, chatID, currentMsgID in
 		return false, errors.Wrap(err, "count messages since")
 	}
 
+	zctx.From(ctx).Info("isNotesNeeded",
+		zap.Int64("chatID", chat.ID),
+		zap.Int64("currentMsgID", currentMsgID),
+		zap.Int64("count", count),
+	)
+
 	return count >= chatContextWindowMessages, nil
 }
 
@@ -397,6 +403,8 @@ func (a *Application) doGenerateNoteForMessage(ctx context.Context, chatID int64
 		zap.Int64("chat_id", chatID),
 		zap.Int64("msg_id", msg.MessageID),
 	)
+
+	lg.Info("doGenerateNoteForMessage")
 
 	existingNotes, err := a.db.GetChatNotes(ctx, chatID)
 	if err != nil {
@@ -596,12 +604,14 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 
 		if notesNeeded {
 			go func() {
+				lg.Info("Notes needed")
 				if err := a.generateNotes(ctx, cc.chatID, int64(m.ID)); err != nil {
 					lg.Error("generate notes", zap.Error(err))
 				}
 			}()
 		} else {
 			go func() {
+				lg.Info("Notes not needed")
 				if err := a.generateNoteForMessage(ctx, cc.chatID, savedMsg); err != nil {
 					lg.Error("generate note for message", zap.Error(err))
 				}

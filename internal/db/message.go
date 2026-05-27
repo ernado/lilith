@@ -112,11 +112,17 @@ func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64, lastM
 }
 
 // CountMessagesSince returns the number of messages for a given chat with
-// message_id strictly greater than sinceMessageID and at most upToMessageID.
+// message_id at most upToMessageID. When sinceMessageID is 0 (no prior snapshot),
+// all messages up to upToMessageID are counted. Otherwise only messages with
+// message_id strictly greater than sinceMessageID are counted.
 func (db *DB) CountMessagesSince(ctx context.Context, chatID, sinceMessageID, upToMessageID int64) (int64, error) {
 	q := psql.Select("COUNT(*)").
 		From("chat_messages").
-		Where("chat_id = ? AND message_id > ? AND message_id <= ?", chatID, sinceMessageID, upToMessageID)
+		Where("chat_id = ? AND message_id <= ?", chatID, upToMessageID)
+
+	if sinceMessageID != 0 {
+		q = q.Where("message_id > ?", sinceMessageID)
+	}
 
 	sql, args, err := q.ToSql()
 	if err != nil {
