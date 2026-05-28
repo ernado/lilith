@@ -547,9 +547,21 @@ func (a *Application) completeWithTools(
 					Emoji string `json:"emoji"`
 				}
 
+				toolContent, err := json.Marshal(struct {
+					Emoji string `json:"reply_emoji"`
+					MsgID int    `json:"msg_id"`
+				}{
+					Emoji: args.Emoji,
+					MsgID: msgID,
+				})
+				if err != nil {
+					lg.Warn("Failed to marshal emoji", zap.Error(err))
+				}
 				dialog = append(dialog, openrouter.ChatCompletionMessage{
-					Role:       openrouter.ChatMessageRoleTool,
-					Content:    openrouter.Content{Text: fmt.Sprintf("Successful emoji reply with %s", args.Emoji)},
+					Role: openrouter.ChatMessageRoleTool,
+					Content: openrouter.Content{
+						Text: string(toolContent),
+					},
 					ToolCallID: tool.ID,
 				})
 
