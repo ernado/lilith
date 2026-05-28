@@ -445,7 +445,7 @@ func (a *Application) doGenerateNoteForMessage(ctx context.Context, chatID int64
 
 	text := strings.TrimSpace(resp.Choices[0].Message.Content.Text)
 
-	if text == "" {
+	if text == "" || text == "Empty line." || len(text) < 40 {
 		lg.Info("No note needed for message")
 		return nil
 	}
