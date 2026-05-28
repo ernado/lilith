@@ -459,6 +459,26 @@ func (a *Application) doGenerateNoteForMessage(ctx context.Context, chatID int64
 	return nil
 }
 
+// russianWeekday returns the Russian name of a weekday.
+func russianWeekday(d time.Weekday) string {
+	switch d {
+	case time.Monday:
+		return "понедельник"
+	case time.Tuesday:
+		return "вторник"
+	case time.Wednesday:
+		return "среда"
+	case time.Thursday:
+		return "четверг"
+	case time.Friday:
+		return "пятница"
+	case time.Saturday:
+		return "суббота"
+	default:
+		return "воскресенье"
+	}
+}
+
 func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -632,9 +652,15 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			return nil
 		}
 
+		now := time.Now()
+		currentTime := fmt.Sprintf("Текущее время: %s, %s.",
+			now.Format("02.01.2006 15:04"),
+			russianWeekday(now.Weekday()),
+		)
+
 		dialog := []openrouter.ChatCompletionMessage{
 			openrouter.SystemMessage(strings.Join([]string{
-				prompt.Protocol, prompt.Character,
+				prompt.Protocol, prompt.Character, currentTime,
 			}, "\n")),
 		}
 
