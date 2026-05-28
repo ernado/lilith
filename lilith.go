@@ -35,11 +35,16 @@ type Self struct {
 	Rank     string `json:"rank"`
 }
 
+type UserMetadata struct {
+	IsBot bool `json:"is_bot"`
+}
+
 // Context is the per-message payload sent to the LLM as a user message.
 type Context struct {
-	Message *Message    `json:"message"`
-	Self    *Self       `json:"self"`
-	User    *ChatMember `json:"user"`
+	Message      *Message      `json:"message"`
+	Self         *Self         `json:"self"`
+	User         *ChatMember   `json:"user"`
+	UserMetadata *UserMetadata `json:"user_metadata"`
 }
 
 // Message represents a Telegram chat message.

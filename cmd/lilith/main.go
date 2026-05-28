@@ -489,8 +489,13 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		zap.String("user", user.Username),
 		zap.String("first_name", user.FirstName),
 		zap.String("last_name", user.LastName),
+		zap.Bool("user_is_bot", user.Bot),
 		zap.Int64("user_id", user.ID),
 	)
+
+	userMeta := &lilith.UserMetadata{
+		IsBot: user.Bot,
+	}
 
 	cc, err := a.resolveChatContext(ctx, e, user.ID)
 	if err != nil {
@@ -567,6 +572,10 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 	}
 
 	if m.Out {
+		return nil
+	}
+	if user.Bot {
+		lg.Info("Ignoring bot message")
 		return nil
 	}
 
@@ -673,6 +682,10 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 					Nickname: a.self.Username,
 					Rank:     cc.selfRank,
 				},
+			}
+
+			if member.UserID == user.ID {
+				dialogContext.UserMetadata = userMeta
 			}
 
 			data, err := json.Marshal(dialogContext)
