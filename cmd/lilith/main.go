@@ -13,6 +13,7 @@ import (
 
 	"github.com/ernado/svetik"
 	"github.com/ernado/svetik/internal/reaction"
+	"github.com/ernado/svetik/internal/static"
 	"github.com/ernado/svetik/internal/weather"
 	"github.com/go-faster/errors"
 	"github.com/go-faster/sdk/app"
@@ -70,13 +71,14 @@ type cachedChatMember struct {
 }
 
 type Application struct {
-	api     *tg.Client
-	client  *telegram.Client
-	ai      *openrouter.Client
-	db      lilith.DB
-	self    *tg.User
-	model   string
-	weather *weather.Client
+	api        *tg.Client
+	client     *telegram.Client
+	ai         *openrouter.Client
+	db         lilith.DB
+	self       *tg.User
+	model      string
+	weather    *weather.Client
+	fileServer *static.Server
 
 	waiter *floodwait.Waiter
 	trace  trace.Tracer
@@ -1429,6 +1431,13 @@ func Root() *cobra.Command {
 					return errors.Wrap(err, "ping database")
 				}
 
+				staticAddr := os.Getenv("STATIC_ADDR")
+				staticURL := os.Getenv("STATIC_URL")
+				var staticServer *static.Server
+				if staticAddr != "" && staticURL != "" {
+					staticServer = static.New(staticAddr, staticURL)
+				}
+
 				a := &Application{
 					api:                          tg.NewClient(client),
 					ai:                           ai,
@@ -1437,10 +1446,20 @@ func Root() *cobra.Command {
 					db:                           db.New(databaseConnection),
 					client:                       client,
 					waiter:                       waiter,
+					fileServer:                   staticServer,
 					trace:                        t.TracerProvider().Tracer("svetik.bot"),
 					channelParticipantsFetchedAt: make(map[int64]time.Time),
 					chatMemberCache:              make(map[chatMemberKey]*cachedChatMember),
 				}
+
+				if staticServer != nil {
+					go func() {
+						if err := staticServer.Run(ctx); err != nil {
+							zctx.From(ctx).Error("static server error", zap.Error(err))
+						}
+					}()
+				}
+
 				dispatcher.OnChannelParticipant(a.onChannelParticipant)
 				dispatcher.OnNewMessage(a.onNewMessage)
 				dispatcher.OnNewChannelMessage(a.onNewChannelMessage)
