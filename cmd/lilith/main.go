@@ -101,7 +101,7 @@ func getEmojiTool() openrouter.Tool {
 	}
 	functionDefinition := openrouter.FunctionDefinition{
 		Name:        "reply_emoji",
-		Description: "Repl to message with emoji",
+		Description: "Repl to message with emoji. Allowed reactions:" + strings.Join(reaction.Allowed, ""),
 		Parameters:  toolParams,
 	}
 	t := openrouter.Tool{
