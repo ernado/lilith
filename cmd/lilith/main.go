@@ -911,11 +911,11 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}
 			dialog = append(dialog,
 				openrouter.SystemMessage("Информация о себе:"),
-				openrouter.UserMessage(string(selfData)),
+				openrouter.SystemMessage(string(selfData)),
 			)
 		}
 
-		dialog = append(dialog, openrouter.SystemMessage("Предыдущая переписка:"))
+		dialog = append(dialog, openrouter.UserMessage("Предыдущая переписка:"))
 
 		for _, msg := range lastMessages {
 			if msg.MessageID == savedMsg.MessageID {
@@ -963,7 +963,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}
 
 			dialog = append(dialog,
-				openrouter.SystemMessage("Текущее сообщение:"),
+				openrouter.UserMessage("Текущее сообщение:"),
 				openrouter.UserMessage(string(data)),
 			)
 		}
