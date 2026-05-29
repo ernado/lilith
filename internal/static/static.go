@@ -84,5 +84,6 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeContent(w, r, id, time.Time{}, bytes.NewReader(data))
 }

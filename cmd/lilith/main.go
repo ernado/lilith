@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/tg"
 	"github.com/revrost/go-openrouter"
@@ -800,6 +802,59 @@ func russianWeekday(d time.Weekday) string {
 	}
 }
 
+func maxSize(sizes []tg.PhotoSizeClass) string {
+	var (
+		maxSize string
+		maxH    int
+	)
+
+	for _, size := range sizes {
+		if s, ok := size.(interface {
+			GetH() int
+			GetType() string
+		}); ok && s.GetH() > maxH {
+			maxH = s.GetH()
+			maxSize = s.GetType()
+		}
+	}
+
+	return maxSize
+}
+
+func (a *Application) persistPhoto(ctx context.Context, lg *zap.Logger, m *tg.Message) (string, error) {
+	if a.fileServer == nil {
+		return "", nil
+	}
+
+	dl := downloader.NewDownloader()
+
+	// Checking for media.
+	switch media := m.Media.(type) {
+	case *tg.MessageMediaPhoto:
+		p, ok := media.Photo.AsNotEmpty()
+		if !ok {
+			return "", nil
+		}
+		out := new(bytes.Buffer)
+		if _, err := dl.Download(a.api, &tg.InputPhotoFileLocation{
+			ID:            p.ID,
+			AccessHash:    p.AccessHash,
+			FileReference: p.FileReference,
+			ThumbSize:     maxSize(p.Sizes),
+		}).Stream(ctx, out); err != nil {
+			return "", errors.Wrap(err, "download photo")
+		}
+		photoURI, err := a.fileServer.Upload(out)
+		if err != nil {
+			return "", errors.Wrap(err, "upload photo")
+		}
+
+		return photoURI, nil
+	default:
+		return "", nil
+	}
+}
+
 func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -833,6 +888,11 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		zap.Bool("user_is_bot", user.Bot),
 		zap.Int64("user_id", user.ID),
 	)
+
+	photoURI, err := a.persistPhoto(ctx, lg, m)
+	if err != nil {
+		lg.Warn("Failed to persist photo", zap.Error(err))
+	}
 
 	userMeta := &lilith.UserMetadata{
 		IsBot: user.Bot,
@@ -1119,6 +1179,18 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			data, err := json.Marshal(dialogContext)
 			if err != nil {
 				return errors.Wrap(err, "marshal dialog context")
+			}
+
+			um := openrouter.UserMessage(string(data))
+			if photoURI != "" {
+				um.Content.Multi = append(um.Content.Multi, openrouter.ChatMessagePart{
+					Type: openrouter.ChatMessagePartTypeImageURL,
+					Text: "image",
+					ImageURL: &openrouter.ChatMessageImageURL{
+						URL:    photoURI,
+						Detail: openrouter.ImageURLDetailHigh,
+					},
+				})
 			}
 
 			dialog = append(dialog,
