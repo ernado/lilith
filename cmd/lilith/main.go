@@ -555,25 +555,37 @@ func (a *Application) completeWithTools(
 					MsgID: msgID,
 				})
 				if err != nil {
-					lg.Warn("Failed to marshal emoji", zap.Error(err))
+					return "", errors.Wrap(err, "marshal emoji")
 				}
-				dialog = append(dialog, openrouter.ChatCompletionMessage{
-					Role: openrouter.ChatMessageRoleTool,
-					Content: openrouter.Content{
-						Text: string(toolContent),
+				assistantContent, err := json.Marshal(tool)
+				if err != nil {
+					return "", errors.Wrap(err, "marshal tool")
+				}
+
+				dialog = append(dialog,
+					openrouter.ChatCompletionMessage{
+						Role: openrouter.ChatMessageRoleAssistant,
+						Content: openrouter.Content{
+							Text: string(assistantContent),
+						},
 					},
-					ToolCallID: tool.ID,
-				})
+					openrouter.ChatCompletionMessage{
+						Role: openrouter.ChatMessageRoleTool,
+						Content: openrouter.Content{
+							Text: string(toolContent),
+						},
+						ToolCallID: tool.ID,
+					},
+				)
 
 				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
-					lg.Warn("Failed to unmarshal emoji", zap.Error(err))
-				} else {
-					lg.Info("Setting reaction to message")
-					if _, err := answer.Reaction(ctx, msgID,
-						&tg.ReactionEmoji{Emoticon: args.Emoji},
-					); err != nil {
-						lg.Warn("Failed to send reaction", zap.Error(err))
-					}
+					return "", errors.Wrap(err, "unmarshal arguments")
+				}
+				lg.Info("Setting reaction to message")
+				if _, err := answer.Reaction(ctx, msgID,
+					&tg.ReactionEmoji{Emoticon: args.Emoji},
+				); err != nil {
+					return "", errors.Wrap(err, "reaction")
 				}
 			default:
 				lg.Warn("Unknown function call", zap.String("name", tool.Function.Name))
