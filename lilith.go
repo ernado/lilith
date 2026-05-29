@@ -41,10 +41,10 @@ type UserMetadata struct {
 
 // Context is the per-message payload sent to the LLM as a user message.
 type Context struct {
-	Message      *Message      `json:"message"`
-	Self         *Self         `json:"self"`
-	User         *ChatMember   `json:"user"`
-	UserMetadata *UserMetadata `json:"user_metadata"`
+	Message      *Message      `json:"message,omitempty"`
+	Self         *Self         `json:"self,omitempty"`
+	User         *ChatMember   `json:"user,omitempty"`
+	UserMetadata *UserMetadata `json:"user_metadata,omitempty"`
 }
 
 // Message represents a Telegram chat message.
@@ -55,7 +55,7 @@ type Message struct {
 	Date          time.Time `json:"date"`
 	Text          string    `json:"text"`
 	IsMyself      bool      `json:"is_myself"`
-	ReplyToID     *int64    `json:"reply_to_id"`
-	ReplyToText   *string   `json:"reply_to_text"`
-	ReplyToMyself *bool     `json:"reply_to_myself"`
+	ReplyToID     *int64    `json:"reply_to_id,omitempty"`
+	ReplyToText   *string   `json:"reply_to_text,omitempty"`
+	ReplyToMyself *bool     `json:"reply_to_myself,omitempty"`
 }

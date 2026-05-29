@@ -37,6 +37,9 @@ const (
 	// channelParticipantsTTL is the minimum interval between participant list refreshes.
 	channelParticipantsTTL = 10 * time.Minute
 
+	// chatMemberTTL is the TTL for application-level chat member cache entries.
+	chatMemberTTL = 5 * time.Minute
+
 	// chatContextWindowMessages is total messages passed to model context.
 	chatContextWindowMessages = 150
 
@@ -46,6 +49,18 @@ const (
 	// maxNotesTokens is the max_tokens parameter for notes generation.
 	maxNotesTokens = 1024
 )
+
+// chatMemberKey is the cache key for a chat member.
+type chatMemberKey struct {
+	chatID int64
+	userID int64
+}
+
+// cachedChatMember wraps a chat member with its fetch timestamp.
+type cachedChatMember struct {
+	member    *lilith.ChatMember
+	fetchedAt time.Time
+}
 
 type Application struct {
 	api    *tg.Client
@@ -62,6 +77,10 @@ type Application struct {
 	// channelParticipantsMu guards channelParticipantsFetchedAt.
 	channelParticipantsMu        sync.Mutex
 	channelParticipantsFetchedAt map[int64]time.Time
+
+	// chatMemberMu guards chatMemberCache.
+	chatMemberMu    sync.Mutex
+	chatMemberCache map[chatMemberKey]*cachedChatMember
 
 	// notesSFG deduplicates concurrent note-generation calls for the same chat.
 	notesSFG singleflight.Group
@@ -254,11 +273,11 @@ func (a *Application) resolveChannel(ctx context.Context, channel *tg.Channel, u
 		chatInfo: channel.Title,
 	}
 
-	if self, err := a.db.GetChatMember(ctx, channel.ID, a.self.ID); err == nil {
+	if self, err := a.getChatMember(ctx, channel.ID, a.self.ID); err == nil {
 		cc.selfRank = self.Rank
 	}
 
-	if member, err := a.db.GetChatMember(ctx, channel.ID, userID); err == nil {
+	if member, err := a.getChatMember(ctx, channel.ID, userID); err == nil {
 		cc.userIsAdmin = member.IsAdmin
 		cc.userIsCreator = member.IsCreator
 		cc.userRank = member.Rank
@@ -286,6 +305,49 @@ func (a *Application) fetchChannelParticipantsCached(ctx context.Context, channe
 	a.channelParticipantsMu.Lock()
 	a.channelParticipantsFetchedAt[channel.ID] = now
 	a.channelParticipantsMu.Unlock()
+
+	return nil
+}
+
+// getChatMember returns a chat member, using the application-level cache to
+// avoid repeated DB round-trips within chatMemberTTL.
+func (a *Application) getChatMember(ctx context.Context, chatID, userID int64) (*lilith.ChatMember, error) {
+	key := chatMemberKey{chatID: chatID, userID: userID}
+	now := time.Now()
+
+	a.chatMemberMu.Lock()
+	if entry, ok := a.chatMemberCache[key]; ok && now.Sub(entry.fetchedAt) < chatMemberTTL {
+		m := entry.member
+		a.chatMemberMu.Unlock()
+
+		return m, nil
+	}
+	a.chatMemberMu.Unlock()
+
+	member, err := a.db.GetChatMember(ctx, chatID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	a.chatMemberMu.Lock()
+	a.chatMemberCache[key] = &cachedChatMember{member: member, fetchedAt: now}
+	a.chatMemberMu.Unlock()
+
+	return member, nil
+}
+
+// upsertChatMemberCached calls UpsertChatMember and updates the cache entry so
+// subsequent calls within the TTL see the freshly written data.
+func (a *Application) upsertChatMemberCached(ctx context.Context, m lilith.ChatMember) error {
+	if err := a.db.UpsertChatMember(ctx, m); err != nil {
+		return err
+	}
+
+	key := chatMemberKey{chatID: m.ChatID, userID: m.UserID}
+
+	a.chatMemberMu.Lock()
+	a.chatMemberCache[key] = &cachedChatMember{member: &m, fetchedAt: time.Now()}
+	a.chatMemberMu.Unlock()
 
 	return nil
 }
@@ -681,7 +743,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		return errors.Wrap(err, "upsert chat")
 	}
 
-	if err := a.db.UpsertChatMember(ctx, lilith.ChatMember{
+	if err := a.upsertChatMemberCached(ctx, lilith.ChatMember{
 		ChatID:    cc.chatID,
 		UserID:    user.ID,
 		Username:  user.Username,
@@ -832,28 +894,42 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			return errors.Wrap(err, "get last messages")
 		}
 
-		// memberCache avoids repeated DB lookups for the same user within one request.
-		memberCache := make(map[int64]*lilith.ChatMember)
+		{
+			// Add self reflection.
+			member, err := a.getChatMember(ctx, cc.chatID, a.self.ID)
+			if err != nil {
+				return errors.Wrap(err, "get chat member")
+			}
+			self := lilith.Self{
+				Name:     a.self.FirstName,
+				Nickname: a.self.Username,
+				Rank:     member.Rank,
+			}
+			selfData, err := json.Marshal(&self)
+			if err != nil {
+				return errors.Wrap(err, "marshal self")
+			}
+			dialog = append(dialog,
+				openrouter.SystemMessage("Информация о себе:"),
+				openrouter.UserMessage(string(selfData)),
+			)
+		}
+
+		dialog = append(dialog, openrouter.SystemMessage("Предыдущая переписка:"))
 
 		for _, msg := range lastMessages {
-			member, ok := memberCache[msg.UserID]
-			if !ok {
-				member, err = a.db.GetChatMember(ctx, msg.ChatID, msg.UserID)
-				if err != nil {
-					return errors.Wrap(err, "get member")
-				}
+			if msg.MessageID == savedMsg.MessageID {
+				continue
+			}
 
-				memberCache[msg.UserID] = member
+			member, err := a.getChatMember(ctx, msg.ChatID, msg.UserID)
+			if err != nil {
+				return errors.Wrap(err, "get member")
 			}
 
 			dialogContext := lilith.Context{
 				Message: &msg,
 				User:    member,
-				Self: &lilith.Self{
-					Name:     a.self.FirstName,
-					Nickname: a.self.Username,
-					Rank:     cc.selfRank,
-				},
 			}
 
 			if member.UserID == user.ID {
@@ -866,6 +942,30 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}
 
 			dialog = append(dialog, openrouter.UserMessage(string(data)))
+		}
+
+		{
+			// Append current message.
+			member, err := a.getChatMember(ctx, savedMsg.ChatID, savedMsg.UserID)
+			if err != nil {
+				return errors.Wrap(err, "get member")
+			}
+
+			dialogContext := lilith.Context{
+				Message:      &savedMsg,
+				User:         member,
+				UserMetadata: userMeta,
+			}
+
+			data, err := json.Marshal(dialogContext)
+			if err != nil {
+				return errors.Wrap(err, "marshal dialog context")
+			}
+
+			dialog = append(dialog,
+				openrouter.SystemMessage("Текущее сообщение:"),
+				openrouter.UserMessage(string(data)),
+			)
 		}
 
 		messageText, err := a.completeWithTools(ctx, lg, dialog, action, answer, m.ID)
@@ -996,7 +1096,7 @@ func (a *Application) fetchChannelParticipants(ctx context.Context, channel *tg.
 				continue
 			}
 
-			if err := a.db.UpsertChatMember(ctx, lilith.ChatMember{
+			if err := a.upsertChatMemberCached(ctx, lilith.ChatMember{
 				ChatID:    channel.ID,
 				UserID:    userID,
 				Username:  user.Username,
@@ -1175,6 +1275,7 @@ func Root() *cobra.Command {
 					waiter:                       waiter,
 					trace:                        t.TracerProvider().Tracer("svetik.bot"),
 					channelParticipantsFetchedAt: make(map[int64]time.Time),
+					chatMemberCache:              make(map[chatMemberKey]*cachedChatMember),
 				}
 				dispatcher.OnChannelParticipant(a.onChannelParticipant)
 				dispatcher.OnNewMessage(a.onNewMessage)
