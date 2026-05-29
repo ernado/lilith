@@ -706,7 +706,7 @@ func (a *Application) completeWithTools(
 				if _, err := answer.Reaction(ctx, msgID,
 					&tg.ReactionEmoji{Emoticon: args.Emoji},
 				); err != nil {
-					return "", errors.Wrap(err, "reaction")
+					lg.Warn("Failed to set reaction", zap.Error(err))
 				}
 			case "get_weather":
 				var args struct {
