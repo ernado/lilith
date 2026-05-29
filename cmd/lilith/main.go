@@ -624,6 +624,7 @@ func (a *Application) completeWithTools(
 	answer *message.RequestBuilder,
 	msgID int,
 ) (string, error) {
+	model := a.model
 	const maxIterations = 4
 
 	tools := []openrouter.Tool{
@@ -653,11 +654,14 @@ func (a *Application) completeWithTools(
 			}
 		}()
 
-		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-			Model:     a.model,
+		resp, err := a.ai.CreateChatCompletionWithFallbackPolicy(ctx, openrouter.ChatCompletionRequest{
+			Model:     model,
 			Messages:  dialog,
 			MaxTokens: maxTokens,
 			Tools:     tools,
+		}, openrouter.ChatCompletionFallbackPolicy{
+			Models:     []string{"x-ai/grok-4.3"},
+			ErrorCodes: []int{400, 402, 429},
 		})
 		close(done)
 
