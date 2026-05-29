@@ -18,4 +18,5 @@ type DB interface {
 	GetChatNotes(ctx context.Context, chatID int64) ([]ChatNote, error)
 	DeleteChatNote(ctx context.Context, chatID, noteID int64) error
 	TrimChatNotes(ctx context.Context, chatID int64, maxNotes int) error
+	Lobotomy(ctx context.Context, chatID int64) error
 }

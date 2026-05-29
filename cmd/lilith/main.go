@@ -919,7 +919,27 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			return errors.Wrap(err, "send message")
 		}
 	case "/lobotomy", "/lobotomy@" + a.self.Username:
-		if _, err := reply.Text(ctx, "Не реализовано"); err != nil {
+		if !cc.userIsAdmin && !cc.userIsCreator {
+			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		if err := a.db.Lobotomy(ctx, cc.chatID); err != nil {
+			lg.Error("lobotomy failed", zap.Error(err))
+
+			if _, err := reply.Text(ctx, "Ошибка при очистке памяти."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		lg.Info("Lobotomy performed", zap.Int64("chat_id", cc.chatID))
+
+		if _, err := reply.Text(ctx, "Память очищена."); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	default:
