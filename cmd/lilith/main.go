@@ -1195,7 +1195,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 
 			dialog = append(dialog,
 				openrouter.UserMessage("Текущее сообщение:"),
-				openrouter.UserMessage(string(data)),
+				um,
 			)
 		}
 
