@@ -8,6 +8,8 @@
 | info               | TEXT      | NOT NULL    |
 | last_notes_msg_id  | BIGINT    | NOT NULL DEFAULT 0 |
 | model              | TEXT      | NOT NULL DEFAULT '' |
+| access_hash        | BIGINT    | NOT NULL DEFAULT 0 |
+| type               | TEXT      | NOT NULL DEFAULT 'channel' |
 
 ## chat_messages
 

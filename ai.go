@@ -26,6 +26,9 @@ type ResponseRequest struct {
 	// Typing, when non-nil, is invoked periodically to keep the chat "typing"
 	// indicator alive during long completions. The caller owns the side effect.
 	Typing func(context.Context) error
+	// Idle, when true, signals that no user message triggered this response.
+	// The bot is sending proactively after a period of inactivity.
+	Idle bool
 }
 
 // ResponseResult is the outcome of a Respond call.

@@ -2,6 +2,17 @@ package lilith
 
 import "time"
 
+// ChatType identifies whether a chat is a Telegram channel/supergroup or a
+// regular group chat.
+type ChatType string
+
+const (
+	// ChatTypeChannel represents a Telegram channel or supergroup.
+	ChatTypeChannel ChatType = "channel"
+	// ChatTypeChat represents a regular Telegram group chat.
+	ChatTypeChat ChatType = "chat"
+)
+
 // Chat represents a Telegram chat.
 type Chat struct {
 	ID             int64
@@ -9,6 +20,12 @@ type Chat struct {
 	LastNotesMsgID int64
 	// Model is the per-chat model override. Empty means use the default model.
 	Model string
+	// AccessHash is the Telegram access hash required to address channels.
+	// Zero for regular group chats.
+	AccessHash int64
+	// Type distinguishes channels/supergroups from regular group chats.
+	// Defaults to ChatTypeChannel.
+	Type ChatType
 }
 
 // ChatNote represents a note attached to a chat.

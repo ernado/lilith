@@ -40,6 +40,15 @@ const (
 	// implicitResponseProbability is the probability of responding to a message
 	// that does not explicitly mention the bot.
 	implicitResponseProbability = 0.05
+
+	// idleCheckInterval is how often the idle checker runs.
+	idleCheckInterval = 1 * time.Minute
+
+	// idleMinDuration is the minimum inactivity time before the bot may write unprompted.
+	idleMinDuration = 1 * time.Minute
+
+	// idleMaxDuration is the upper bound of the random inactivity threshold.
+	idleMaxDuration = 10 * time.Hour
 )
 
 // chatMemberKey is the cache key for a chat member.
@@ -74,6 +83,10 @@ type App struct {
 	// chatMemberMu guards chatMemberCache.
 	chatMemberMu    sync.Mutex
 	chatMemberCache map[chatMemberKey]*cachedChatMember
+
+	// chatPeersMu guards chatPeers.
+	chatPeersMu sync.Mutex
+	chatPeers   map[int64]tg.InputPeerClass
 }
 
 // New constructs an App. files may be nil to disable media handling.
@@ -97,6 +110,7 @@ func New(
 		trace:                        tracer,
 		channelParticipantsFetchedAt: make(map[int64]time.Time),
 		chatMemberCache:              make(map[chatMemberKey]*cachedChatMember),
+		chatPeers:                    make(map[int64]tg.InputPeerClass),
 	}
 }
 
@@ -147,6 +161,10 @@ func (a *App) Run(ctx context.Context) error {
 			}); err != nil {
 				return errors.Wrap(err, "set commands")
 			}
+			if err := a.loadChatPeersFromDB(ctx); err != nil {
+				zctx.From(ctx).Error("load chat peers from db", zap.Error(err))
+			}
+			go a.runIdleChecker(ctx)
 			<-ctx.Done()
 			return ctx.Err()
 		})
@@ -206,6 +224,8 @@ func extractUserID(m *tg.Message) (int64, bool) {
 type chatContext struct {
 	chatID        int64
 	chatInfo      string
+	chatType      lilith.ChatType
+	accessHash    int64
 	selfRank      string
 	userIsAdmin   bool
 	userIsCreator bool
@@ -226,6 +246,7 @@ func (a *App) resolveRegularChat(ctx context.Context, chatID int64, userID int64
 	cc := &chatContext{
 		chatID:   chatFull.ID,
 		chatInfo: chatFull.About,
+		chatType: lilith.ChatTypeChat,
 	}
 
 	// Build a user map from the full chat response for name lookups.
@@ -297,8 +318,10 @@ func (a *App) resolveChannel(ctx context.Context, channel *tg.Channel, userID in
 	}
 
 	cc := &chatContext{
-		chatID:   channel.ID,
-		chatInfo: channel.Title,
+		chatID:     channel.ID,
+		chatInfo:   channel.Title,
+		chatType:   lilith.ChatTypeChannel,
+		accessHash: channel.AccessHash,
 	}
 
 	if self, err := a.getChatMember(ctx, channel.ID, a.self.ID); err == nil {
@@ -465,6 +488,265 @@ func (a *App) persistPhoto(ctx context.Context, m *tg.Message) (string, error) {
 	}
 }
 
+// storeChatPeer records the input peer for a chat so it can be used for
+// proactive (idle) messages later.
+func (a *App) storeChatPeer(chatID int64, e tg.Entities) {
+	var peer tg.InputPeerClass
+
+	for _, chat := range e.Chats {
+		peer = &tg.InputPeerChat{ChatID: chat.ID}
+		break
+	}
+
+	for _, channel := range e.Channels {
+		peer = &tg.InputPeerChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash}
+		break
+	}
+
+	if peer == nil {
+		return
+	}
+
+	a.chatPeersMu.Lock()
+	a.chatPeers[chatID] = peer
+	a.chatPeersMu.Unlock()
+}
+
+// loadChatPeersFromDB populates the in-memory chatPeers map from persisted
+// chat records so idle messages can be sent after a bot restart.
+func (a *App) loadChatPeersFromDB(ctx context.Context) error {
+	chats, err := a.db.GetChats(ctx)
+	if err != nil {
+		return errors.Wrap(err, "get chats")
+	}
+
+	a.chatPeersMu.Lock()
+	defer a.chatPeersMu.Unlock()
+
+	for _, chat := range chats {
+		if chat.Type == lilith.ChatTypeChannel {
+			a.chatPeers[chat.ID] = &tg.InputPeerChannel{
+				ChannelID:  chat.ID,
+				AccessHash: chat.AccessHash,
+			}
+		} else {
+			a.chatPeers[chat.ID] = &tg.InputPeerChat{ChatID: chat.ID}
+		}
+	}
+
+	return nil
+}
+
+// runIdleChecker periodically checks all known chats for inactivity and
+// triggers an unprompted bot message when the last message was not from the
+// bot and the chat has been silent for 2–4 hours.
+func (a *App) runIdleChecker(ctx context.Context) {
+	ticker := time.NewTicker(idleCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := a.checkIdleChats(ctx); err != nil {
+			zctx.From(ctx).Error("idle checker failed", zap.Error(err))
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *App) checkIdleChats(ctx context.Context) error {
+	chats, err := a.db.GetChats(ctx)
+	if err != nil {
+		return errors.Wrap(err, "get chats")
+	}
+
+	for _, chat := range chats {
+		if err := a.checkIdleChat(ctx, chat); err != nil {
+			zctx.From(ctx).Error("check idle chat",
+				zap.Error(err),
+				zap.Int64("chat_id", chat.ID),
+			)
+		}
+	}
+
+	return nil
+}
+
+func (a *App) checkIdleChat(ctx context.Context, chat lilith.Chat) error {
+	last, err := a.db.GetLastMessage(ctx, chat.ID)
+	if err != nil {
+		return errors.Wrap(err, "get last message")
+	}
+
+	if last == nil {
+		return nil
+	}
+
+	if last.IsMyself {
+		return nil
+	}
+
+	// Random threshold in [idleMinDuration, idleMaxDuration).
+	threshold := idleMinDuration + time.Duration(rand.Int63n(int64(idleMaxDuration-idleMinDuration)))
+
+	if time.Since(last.Date) < threshold {
+		return nil
+	}
+
+	zctx.From(ctx).Info("Idle threshold reached, sending unprompted message",
+		zap.Int64("chat_id", chat.ID),
+		zap.Duration("idle", time.Since(last.Date)),
+		zap.Duration("threshold", threshold),
+	)
+
+	return a.sendIdleMessage(ctx, chat, last)
+}
+
+// saveSentMessage extracts the message ID and date from a Telegram send update,
+// merges them into base, optionally resolves the bot-reply thread when parent
+// is non-nil, and persists the result. Errors are logged, not returned.
+func (a *App) saveSentMessage(ctx context.Context, update tg.UpdatesClass, base lilith.Message, parent *lilith.Message) {
+	lg := zctx.From(ctx)
+
+	save := func(msgID int64, date time.Time) {
+		msg := base
+		msg.MessageID = msgID
+		msg.Date = date
+
+		if parent != nil {
+			thread.ResolveBotReply(msg.MessageID, msg.ReplyToID, parent).Apply(&msg)
+		}
+
+		if err := a.db.SaveMessage(ctx, msg); err != nil {
+			lg.Error("save sent message", zap.Error(err))
+		}
+	}
+
+	switch v := update.(type) {
+	case *tg.UpdateShortSentMessage:
+		save(int64(v.ID), time.Unix(int64(v.Date), 0))
+	case *tg.Updates:
+		for _, upd := range v.Updates {
+			if u, ok := upd.(*tg.UpdateMessageID); ok {
+				save(int64(u.ID), time.Now())
+			}
+		}
+	default:
+		lg.Warn("Unexpected update type from send",
+			zap.String("t", fmt.Sprintf("%T", update)),
+		)
+	}
+}
+func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilith.Message) error {
+	lg := zctx.From(ctx).With(zap.Int64("chat_id", chat.ID))
+
+	a.chatPeersMu.Lock()
+	peer, ok := a.chatPeers[chat.ID]
+	a.chatPeersMu.Unlock()
+
+	if !ok {
+		lg.Info("No known peer for chat, skipping idle message")
+		return nil
+	}
+
+	now := time.Now()
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return errors.Wrap(err, "load location")
+	}
+	now = now.In(loc)
+	currentTime := fmt.Sprintf("Текущее время: %s, %s.",
+		now.Format(time.RFC822Z),
+		russianWeekday(now.Weekday()),
+	)
+
+	notes, err := a.memory.Notes(ctx, chat.ID)
+	if err != nil {
+		return errors.Wrap(err, "get chat notes")
+	}
+
+	members, err := a.db.GetChatMembers(ctx, chat.ID)
+	if err != nil {
+		return errors.Wrap(err, "get chat members")
+	}
+
+	lastMessages, err := a.db.GetLastMessages(ctx, chat.ID, chatContextWindowMessages, last.MessageID)
+	if err != nil {
+		return errors.Wrap(err, "get last messages")
+	}
+
+	var selfRank string
+	if selfMember, err := a.getChatMember(ctx, chat.ID, a.self.ID); err == nil {
+		selfRank = selfMember.Rank
+	}
+
+	self := lilith.Self{
+		Name:     a.self.FirstName,
+		Nickname: a.self.Username,
+		Rank:     selfRank,
+	}
+
+	var history []lilith.Context
+
+	for _, msg := range lastMessages {
+		member, err := a.getChatMember(ctx, msg.ChatID, msg.UserID)
+		if err != nil {
+			lg.Warn("Failed to get member for history",
+				zap.Error(err),
+				zap.Int64("user_id", msg.UserID),
+			)
+
+			continue
+		}
+
+		history = append(history, lilith.Context{
+			Message: &msg,
+			User:    member,
+		})
+	}
+
+	req := lilith.ResponseRequest{
+		Model:       chat.Model,
+		CurrentTime: currentTime,
+		Notes:       notes,
+		Members:     members,
+		Self:        self,
+		History:     history,
+		Idle:        true,
+	}
+
+	result, err := a.ai.Respond(ctx, req)
+	if err != nil {
+		return errors.Wrap(err, "respond")
+	}
+
+	if strings.TrimSpace(result.Text) == "" {
+		lg.Warn("Empty idle response from AI")
+		return nil
+	}
+
+	sender := message.NewSender(a.api)
+
+	update, err := sender.To(peer).Text(ctx, result.Text)
+	if err != nil {
+		return errors.Wrap(err, "send idle message")
+	}
+
+	lg.Info("Sent idle message", zap.String("text", result.Text))
+
+	a.saveSentMessage(ctx, update, lilith.Message{
+		ChatID:   chat.ID,
+		UserID:   a.self.ID,
+		Text:     result.Text,
+		IsMyself: true,
+	}, nil)
+
+	return nil
+}
+
 func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -519,9 +801,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		zap.String("chat_info", cc.chatInfo),
 	)
 
+	a.storeChatPeer(cc.chatID, e)
+
 	if err := a.db.UpsertChat(ctx, lilith.Chat{
-		ID:   cc.chatID,
-		Info: cc.chatInfo,
+		ID:         cc.chatID,
+		Info:       cc.chatInfo,
+		AccessHash: cc.accessHash,
+		Type:       cc.chatType,
 	}); err != nil {
 		return errors.Wrap(err, "upsert chat")
 	}
@@ -861,49 +1147,14 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return errors.Wrap(err, "send reply")
 		}
 
-		switch v := replyUpdate.(type) {
-		case *tg.UpdateShortSentMessage:
-			botMsg := lilith.Message{
-				ChatID:          cc.chatID,
-				MessageID:       int64(v.ID),
-				UserID:          a.self.ID,
-				Date:            time.Unix(int64(v.Date), 0),
-				Text:            result.Text,
-				ReplyToID:       lilith.T(int64(m.ID)),
-				IsMyself:        true,
-				MessageThreadID: savedMsg.MessageThreadID,
-			}
-			thread.ResolveBotReply(botMsg.MessageID, botMsg.ReplyToID, &savedMsg).Apply(&botMsg)
-
-			if err := a.db.SaveMessage(ctx, botMsg); err != nil {
-				lg.Error("save sent message", zap.Error(err))
-			}
-		case *tg.Updates:
-			for _, update := range v.Updates {
-				switch upd := update.(type) {
-				case *tg.UpdateMessageID:
-					botMsg := lilith.Message{
-						ChatID:          cc.chatID,
-						MessageID:       int64(upd.ID),
-						UserID:          a.self.ID,
-						Date:            time.Now(),
-						Text:            result.Text,
-						ReplyToID:       lilith.T(int64(m.ID)),
-						IsMyself:        true,
-						MessageThreadID: savedMsg.MessageThreadID,
-					}
-					thread.ResolveBotReply(botMsg.MessageID, botMsg.ReplyToID, &savedMsg).Apply(&botMsg)
-
-					if err := a.db.SaveMessage(ctx, botMsg); err != nil {
-						lg.Error("save sent message", zap.Error(err))
-					}
-				}
-			}
-		default:
-			lg.Warn("Unexpected replyUpdate type",
-				zap.String("t", fmt.Sprintf("%T", replyUpdate)),
-			)
-		}
+		a.saveSentMessage(ctx, replyUpdate, lilith.Message{
+			ChatID:          cc.chatID,
+			UserID:          a.self.ID,
+			Text:            result.Text,
+			ReplyToID:       lilith.T(int64(m.ID)),
+			IsMyself:        true,
+			MessageThreadID: savedMsg.MessageThreadID,
+		}, &savedMsg)
 	}
 
 	return nil
@@ -918,8 +1169,10 @@ func (a *App) fetchChannelParticipants(ctx context.Context, channel *tg.Channel)
 	}
 
 	if err := a.db.UpsertChat(ctx, lilith.Chat{
-		ID:   channel.ID,
-		Info: channel.Title,
+		ID:         channel.ID,
+		Info:       channel.Title,
+		AccessHash: channel.AccessHash,
+		Type:       lilith.ChatTypeChannel,
 	}); err != nil {
 		return errors.Wrap(err, "upsert chat")
 	}

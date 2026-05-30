@@ -1,0 +1,3 @@
+ALTER TABLE chat
+    ADD COLUMN access_hash BIGINT NOT NULL DEFAULT 0;
+

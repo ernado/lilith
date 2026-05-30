@@ -237,6 +237,39 @@ func (db *DB) GetLastMessageByAuthorInTopic(ctx context.Context, chatID, authorI
 	return nil, nil
 }
 
+// GetLastMessage returns the most recent message for a given chat, or nil when
+// the chat has no messages yet.
+func (db *DB) GetLastMessage(ctx context.Context, chatID int64) (*lilith.Message, error) {
+	q := psql.Select(messageColumns...).
+		From("chat_messages").
+		Where("chat_id = ?", chatID).
+		OrderBy("message_id DESC").
+		Limit(1)
+
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "build query")
+	}
+
+	rows, err := db.pgx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "query")
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+
+	var msg lilith.Message
+
+	if err := rows.Scan(scanDest(&msg)...); err != nil {
+		return nil, errors.Wrap(err, "scan")
+	}
+
+	return &msg, rows.Err()
+}
+
 // sameTopic reports whether two Telegram topic ids refer to the same topic,
 // treating two nil values as the same (non-forum) topic.
 func sameTopic(a, b *int64) bool {

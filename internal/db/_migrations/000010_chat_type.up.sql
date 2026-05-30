@@ -1,0 +1,3 @@
+ALTER TABLE chat
+    ADD COLUMN type TEXT NOT NULL DEFAULT 'channel';
+

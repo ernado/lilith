@@ -147,6 +147,14 @@ func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletio
 		dialog = append(dialog, openrouter.UserMessage(string(data)))
 	}
 
+	if req.Idle {
+		dialog = append(dialog, openrouter.UserMessage(
+			"Никто не писал уже долгое время. Напиши что-нибудь от себя — без повода, как будто сама решила продолжить разговор.",
+		))
+
+		return dialog, nil
+	}
+
 	currentData, err := json.Marshal(req.Current)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal current context")
