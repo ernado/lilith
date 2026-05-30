@@ -60,4 +60,19 @@ type Message struct {
 	ReplyToID     *int64    `json:"reply_to_id,omitempty"`
 	ReplyToText   *string   `json:"reply_to_text,omitempty"`
 	ReplyToMyself *bool     `json:"reply_to_myself,omitempty"`
+
+	// MessageThreadID is Telegram's native forum topic id. It is distinct from
+	// the logical ThreadID and is used only to scope logical threads so they
+	// never cross forum-topic boundaries.
+	MessageThreadID *int64 `json:"message_thread_id,omitempty"`
+	// ThreadID is the stable identifier of the logical conversation thread. It
+	// is the root message id of the thread; all messages in the same
+	// conversation share it.
+	ThreadID *int64 `json:"thread_id,omitempty"`
+	// ThreadRootMessageID is the message_id of the message that started the thread.
+	ThreadRootMessageID *int64 `json:"thread_root_message_id,omitempty"`
+	// ThreadParentMessageID is the message this one is a direct continuation of.
+	ThreadParentMessageID *int64 `json:"thread_parent_message_id,omitempty"`
+	// ThreadSource labels how the thread was derived (for debugging/analytics).
+	ThreadSource *string `json:"thread_source,omitempty"`
 }

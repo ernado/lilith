@@ -13,6 +13,17 @@ type MessageTestSuite struct {
 	DBTestSuite
 }
 
+// equalMessage asserts that got equals want, comparing Date by instant (Telegram
+// time.Time round-trips through Postgres with a different *time.Location pointer,
+// which reflect-based equality would otherwise reject).
+func (suite *MessageTestSuite) equalMessage(want lilith.Message, got *lilith.Message) {
+	suite.Require().NotNil(got)
+	suite.True(want.Date.Equal(got.Date), "date mismatch: want %s, got %s", want.Date, got.Date)
+
+	want.Date = got.Date
+	suite.Equal(want, *got)
+}
+
 func (suite *MessageTestSuite) chat() lilith.Chat {
 	ctx := suite.T().Context()
 
@@ -42,7 +53,7 @@ func (suite *MessageTestSuite) TestSaveMessage_Insert() {
 
 	got, err := suite.db.GetMessage(ctx, msg.ChatID, msg.MessageID)
 	suite.Require().NoError(err)
-	suite.Equal(msg, *got)
+	suite.equalMessage(msg, got)
 }
 
 func (suite *MessageTestSuite) TestSaveMessage_DoNothingOnConflict() {
@@ -87,7 +98,7 @@ func (suite *MessageTestSuite) TestSaveMessage_WithReply() {
 
 	got, err := suite.db.GetMessage(ctx, msg.ChatID, msg.MessageID)
 	suite.Require().NoError(err)
-	suite.Equal(msg, *got)
+	suite.equalMessage(msg, got)
 }
 
 func (suite *MessageTestSuite) TestGetLastMessages_Empty() {
@@ -186,6 +197,68 @@ func (suite *MessageTestSuite) TestGetLastMessages_LastMessageIDCutoff() {
 	suite.Equal(int64(1), msgs[0].MessageID)
 	suite.Equal(int64(2), msgs[1].MessageID)
 	suite.Equal(int64(3), msgs[2].MessageID)
+}
+
+func (suite *MessageTestSuite) TestSaveMessage_WithThread() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+	msg := lilith.Message{
+		ChatID:                chat.ID,
+		MessageID:             300,
+		Text:                  "threaded message",
+		MessageThreadID:       lilith.T(int64(7)),
+		ThreadID:              lilith.T(int64(5)),
+		ThreadRootMessageID:   lilith.T(int64(5)),
+		ThreadParentMessageID: lilith.T(int64(10)),
+		ThreadSource:          lilith.T("explicit_reply"),
+	}
+
+	err := suite.db.SaveMessage(ctx, msg)
+	suite.Require().NoError(err)
+
+	got, err := suite.db.GetMessage(ctx, msg.ChatID, msg.MessageID)
+	suite.Require().NoError(err)
+	suite.equalMessage(msg, got)
+}
+
+func (suite *MessageTestSuite) TestGetLastMessageByAuthorInTopic() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	save := func(id, author int64, topic *int64) {
+		suite.Require().NoError(suite.db.SaveMessage(ctx, lilith.Message{
+			ChatID:          chat.ID,
+			MessageID:       id,
+			UserID:          author,
+			Text:            "msg",
+			MessageThreadID: topic,
+		}))
+	}
+
+	topic := int64(7)
+	save(1, 100, &topic)
+	save(2, 200, &topic)
+	save(3, 100, &topic) // most recent by author 100 in topic 7.
+	save(4, 100, nil)    // different topic (none).
+	save(5, 200, &topic)
+
+	// Author 100 in topic 7 before message 5: should be message 3.
+	got, err := suite.db.GetLastMessageByAuthorInTopic(ctx, chat.ID, 100, &topic, 5, 6)
+	suite.Require().NoError(err)
+	suite.Require().NotNil(got)
+	suite.Equal(int64(3), got.MessageID)
+
+	// No author 999 anywhere: nil.
+	got, err = suite.db.GetLastMessageByAuthorInTopic(ctx, chat.ID, 999, &topic, 5, 6)
+	suite.Require().NoError(err)
+	suite.Nil(got)
+
+	// Lookback too small to reach message 3: nil.
+	got, err = suite.db.GetLastMessageByAuthorInTopic(ctx, chat.ID, 100, &topic, 5, 1)
+	suite.Require().NoError(err)
+	suite.Nil(got)
 }
 
 func TestMessageTestSuite(t *testing.T) {

@@ -22,6 +22,17 @@
 | reply_to_id     | BIGINT      |                                               |
 | reply_to_text   | TEXT        |                                               |
 | reply_to_myself | BOOLEAN     |                                               |
+| message_thread_id        | BIGINT |                                          |
+| thread_id                | BIGINT |                                          |
+| thread_root_message_id   | BIGINT |                                          |
+| thread_parent_message_id | BIGINT |                                          |
+| thread_source            | TEXT   |                                          |
+
+Index `chat_messages_thread_idx` on `(chat_id, thread_id, message_id)`.
+
+`message_thread_id` is Telegram's native forum topic id (a scoping filter).
+`thread_id` is the bot's logical conversation id (the thread's root message id).
+See THREADS.md.
 
 ## chat_members
 

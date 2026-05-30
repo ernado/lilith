@@ -24,6 +24,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ernado/lilith"
+	"github.com/ernado/lilith/internal/thread"
 )
 
 const (
@@ -539,43 +540,82 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 	}
 
 	var (
-		replyToID     *int64
-		replyToText   *string
-		replyToMyself *bool
+		replyToID       *int64
+		replyToText     *string
+		replyToMyself   *bool
+		messageThreadID *int64
+		parentMsg       *lilith.Message
 	)
 
 	if replyHeader, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
-		id := int64(replyHeader.ReplyToMsgID)
+		topID, hasTop := replyHeader.GetReplyToTopID()
 
-		replyToID = &id
-
-		if replyHeader.QuoteText != "" {
-			replyToText = &replyHeader.QuoteText
+		// Resolve the Telegram forum topic (distinct from the logical thread).
+		if replyHeader.ForumTopic {
+			if hasTop {
+				messageThreadID = lilith.T(int64(topID))
+			} else {
+				messageThreadID = lilith.T(int64(replyHeader.ReplyToMsgID))
+			}
 		}
 
-		msg, err := a.db.GetMessage(ctx, cc.chatID, int64(replyHeader.ReplyToMsgID))
-		if err != nil {
-			zctx.From(ctx).Warn("Reply-to message not found in db",
-				zap.Int64("chat_id", cc.chatID),
-				zap.Int("reply_to_msg_id", replyHeader.ReplyToMsgID),
-				zap.Error(err),
-			)
-		} else if msg.IsMyself {
-			replyToMyself = &msg.IsMyself
+		// In a forum topic without an explicit top id, ReplyToMsgID is the topic
+		// root itself, not a genuine reply target.
+		topicRootOnly := replyHeader.ForumTopic && !hasTop
+
+		if replyHeader.ReplyToMsgID != 0 && !topicRootOnly {
+			id := int64(replyHeader.ReplyToMsgID)
+
+			replyToID = &id
+
+			if replyHeader.QuoteText != "" {
+				replyToText = &replyHeader.QuoteText
+			}
+
+			msg, err := a.db.GetMessage(ctx, cc.chatID, id)
+			if err != nil {
+				zctx.From(ctx).Warn("Reply-to message not found in db",
+					zap.Int64("chat_id", cc.chatID),
+					zap.Int64("reply_to_msg_id", id),
+					zap.Error(err),
+				)
+			} else {
+				parentMsg = msg
+
+				if msg.IsMyself {
+					replyToMyself = &msg.IsMyself
+				}
+			}
 		}
 	}
 
 	savedMsg := lilith.Message{
-		ChatID:        cc.chatID,
-		MessageID:     int64(m.ID),
-		UserID:        user.ID,
-		Date:          time.Unix(int64(m.Date), 0),
-		Text:          m.Message,
-		IsMyself:      m.Out,
-		ReplyToID:     replyToID,
-		ReplyToText:   replyToText,
-		ReplyToMyself: replyToMyself,
+		ChatID:          cc.chatID,
+		MessageID:       int64(m.ID),
+		UserID:          user.ID,
+		Date:            time.Unix(int64(m.Date), 0),
+		Text:            m.Message,
+		IsMyself:        m.Out,
+		ReplyToID:       replyToID,
+		ReplyToText:     replyToText,
+		ReplyToMyself:   replyToMyself,
+		MessageThreadID: messageThreadID,
 	}
+
+	// Resolve the logical thread for this message.
+	var lastAuthor *lilith.Message
+	if replyToID == nil {
+		la, err := a.db.GetLastMessageByAuthorInTopic(
+			ctx, cc.chatID, user.ID, messageThreadID, int64(m.ID), thread.MaxInterveningMessages,
+		)
+		if err != nil {
+			lg.Warn("Failed to look up last author message", zap.Error(err))
+		} else {
+			lastAuthor = la
+		}
+	}
+
+	thread.ResolveIncoming(savedMsg, parentMsg, lastAuthor).Apply(&savedMsg)
 
 	if err := a.db.SaveMessage(ctx, savedMsg); err != nil {
 		lg.Error("save message", zap.Error(err))
@@ -747,7 +787,8 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		}
 
 		var history []lilith.Context
-		for _, msg := range lastMessages {
+		candidates := thread.SelectHistoryCandidates(lastMessages, int64(m.ID), chatContextWindowMessages)
+		for _, msg := range candidates {
 			if msg.MessageID == savedMsg.MessageID {
 				continue
 			}
@@ -822,30 +863,38 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 
 		switch v := replyUpdate.(type) {
 		case *tg.UpdateShortSentMessage:
-			if err := a.db.SaveMessage(ctx, lilith.Message{
-				ChatID:    cc.chatID,
-				MessageID: int64(v.ID),
-				UserID:    a.self.ID,
-				Date:      time.Unix(int64(v.Date), 0),
-				Text:      result.Text,
-				ReplyToID: lilith.T(int64(m.ID)),
-				IsMyself:  true,
-			}); err != nil {
+			botMsg := lilith.Message{
+				ChatID:          cc.chatID,
+				MessageID:       int64(v.ID),
+				UserID:          a.self.ID,
+				Date:            time.Unix(int64(v.Date), 0),
+				Text:            result.Text,
+				ReplyToID:       lilith.T(int64(m.ID)),
+				IsMyself:        true,
+				MessageThreadID: savedMsg.MessageThreadID,
+			}
+			thread.ResolveBotReply(botMsg.MessageID, botMsg.ReplyToID, &savedMsg).Apply(&botMsg)
+
+			if err := a.db.SaveMessage(ctx, botMsg); err != nil {
 				lg.Error("save sent message", zap.Error(err))
 			}
 		case *tg.Updates:
 			for _, update := range v.Updates {
 				switch upd := update.(type) {
 				case *tg.UpdateMessageID:
-					if err := a.db.SaveMessage(ctx, lilith.Message{
-						ChatID:    cc.chatID,
-						MessageID: int64(upd.ID),
-						UserID:    a.self.ID,
-						Date:      time.Now(),
-						Text:      result.Text,
-						ReplyToID: lilith.T(int64(m.ID)),
-						IsMyself:  true,
-					}); err != nil {
+					botMsg := lilith.Message{
+						ChatID:          cc.chatID,
+						MessageID:       int64(upd.ID),
+						UserID:          a.self.ID,
+						Date:            time.Now(),
+						Text:            result.Text,
+						ReplyToID:       lilith.T(int64(m.ID)),
+						IsMyself:        true,
+						MessageThreadID: savedMsg.MessageThreadID,
+					}
+					thread.ResolveBotReply(botMsg.MessageID, botMsg.ReplyToID, &savedMsg).Apply(&botMsg)
+
+					if err := a.db.SaveMessage(ctx, botMsg); err != nil {
 						lg.Error("save sent message", zap.Error(err))
 					}
 				}
