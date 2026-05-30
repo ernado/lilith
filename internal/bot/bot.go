@@ -45,10 +45,10 @@ const (
 	idleCheckInterval = 1 * time.Minute
 
 	// idleMinDuration is the minimum inactivity time before the bot may write unprompted.
-	idleMinDuration = 1 * time.Minute
+	idleMinDuration = 30 * time.Minute
 
 	// idleMaxDuration is the upper bound of the random inactivity threshold.
-	idleMaxDuration = 10 * time.Hour
+	idleMaxDuration = 2 * time.Minute
 )
 
 // chatMemberKey is the cache key for a chat member.
