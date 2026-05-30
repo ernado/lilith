@@ -247,7 +247,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		}
 
 		if u := resp.Usage; u != nil {
-			lg.Debug("Token usage",
+			lg.Info("Token usage",
 				zap.Int("prompt_tokens", u.PromptTokens),
 				zap.Int("completion_tokens", u.CompletionTokens),
 				zap.Int("total_tokens", u.TotalTokens),
@@ -393,7 +393,7 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 	}
 
 	if u := resp.Usage; u != nil {
-		zctx.From(ctx).Debug("Token usage (generate notes)",
+		zctx.From(ctx).Info("Token usage (generate notes)",
 			zap.Int("prompt_tokens", u.PromptTokens),
 			zap.Int("completion_tokens", u.CompletionTokens),
 			zap.Int("total_tokens", u.TotalTokens),
@@ -437,7 +437,7 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 	}
 
 	if u := resp.Usage; u != nil {
-		zctx.From(ctx).Debug("Token usage (generate note)",
+		zctx.From(ctx).Info("Token usage (generate note)",
 			zap.Int("prompt_tokens", u.PromptTokens),
 			zap.Int("completion_tokens", u.CompletionTokens),
 			zap.Int("total_tokens", u.TotalTokens),
