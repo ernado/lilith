@@ -114,7 +114,7 @@ func migrateUp(databaseURI string, force bool) error {
 	return nil
 }
 
-func run(ctx context.Context, _ *zap.Logger, t *app.Telemetry) error {
+func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 	botToken := os.Getenv("BOT_TOKEN")
 	if botToken == "" {
 		return errors.New("BOT_TOKEN is empty")
@@ -176,17 +176,25 @@ func run(ctx context.Context, _ *zap.Logger, t *app.Telemetry) error {
 		fileStore = staticServer
 	}
 
-	scraperClient, err := scraper.NewBrowser(ctx, scraper.BrowserOptions{
-		Addr: os.Getenv("CHROMEDP_ADDR"),
-	})
-	if err != nil {
-		return errors.Wrap(err, "create scraper")
+	var scraperService lilith.Scraper
+	if scraperAddr := os.Getenv("SCRAPER_ADDR"); scraperAddr != "" {
+		lg.Info("Using scraper",
+			zap.String("addr", scraperAddr),
+		)
+		scraperClient, err := scraper.NewBrowser(ctx, scraper.BrowserOptions{
+			Addr: scraperAddr,
+		})
+		if err != nil {
+			return errors.Wrap(err, "create scraper")
+		}
+		defer scraperClient.Close()
+
+		scraperService = scraperClient
 	}
-	defer scraperClient.Close()
 
 	aiClient := ai.New(router, aiModel, weatherClient)
 	mem := memory.New(database, aiClient)
-	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperClient, waiter, t.TracerProvider().Tracer("lilith.bot"))
+	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperService, waiter, t.TracerProvider().Tracer("lilith.bot"))
 	botApp.Register(dispatcher)
 
 	if staticServer != nil {

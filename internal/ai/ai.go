@@ -217,6 +217,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 	tools := []openrouter.Tool{
 		emojiTool(),
 		weatherTool(),
+		{Type: "openrouter:web_search"},
 	}
 
 	model := c.model
