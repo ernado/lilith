@@ -13,3 +13,6 @@ var Notes string
 
 //go:embed note_single.md
 var NoteSingle string
+
+//go:embed idle.md
+var Idle string

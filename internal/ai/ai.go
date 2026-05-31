@@ -176,9 +176,7 @@ func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletio
 	}
 
 	if req.Idle {
-		dialog = append(dialog, openrouter.UserMessage(
-			"Никто не писал уже долгое время. Напиши что-нибудь от себя — без повода, как будто сама решила продолжить разговор.",
-		))
+		dialog = append(dialog, openrouter.UserMessage(prompt.Idle))
 
 		return dialog, nil
 	}
