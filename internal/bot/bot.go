@@ -232,8 +232,8 @@ type chatContext struct {
 	userRank      string
 }
 
-func (a *App) resolveRegularChat(ctx context.Context, chatID int64, userID int64) (*chatContext, error) {
-	full, err := a.api.MessagesGetFullChat(ctx, chatID)
+func (a *App) resolveRegularChat(ctx context.Context, chat *tg.Chat, userID int64) (*chatContext, error) {
+	full, err := a.api.MessagesGetFullChat(ctx, chat.ID)
 	if err != nil {
 		return nil, errors.Wrap(err, "get full chat")
 	}
@@ -243,9 +243,17 @@ func (a *App) resolveRegularChat(ctx context.Context, chatID int64, userID int64
 		return nil, errors.New("unexpected full chat type")
 	}
 
+	// A regular group chat carries its name in the entity Title; chatFull.About
+	// is the (usually empty) description. Fall back to the description only when
+	// the title is missing.
+	chatInfo := chat.Title
+	if chatInfo == "" {
+		chatInfo = chatFull.About
+	}
+
 	cc := &chatContext{
 		chatID:   chatFull.ID,
-		chatInfo: chatFull.About,
+		chatInfo: chatInfo,
 		chatType: lilith.ChatTypeChat,
 	}
 
@@ -415,7 +423,7 @@ func (a *App) upsertChatMemberCached(ctx context.Context, m lilith.ChatMember) e
 
 func (a *App) resolveChatContext(ctx context.Context, e tg.Entities, userID int64) (*chatContext, error) {
 	for _, chat := range e.Chats {
-		return a.resolveRegularChat(ctx, chat.ID, userID)
+		return a.resolveRegularChat(ctx, chat, userID)
 	}
 
 	for _, channel := range e.Channels {
@@ -946,6 +954,7 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		Date:            time.Unix(int64(m.Date), 0),
 		Text:            m.Message,
 		IsMyself:        m.Out,
+		ImageURL:        photoURI,
 		ReplyToID:       replyToID,
 		ReplyToText:     replyToText,
 		ReplyToMyself:   replyToMyself,

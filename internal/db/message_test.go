@@ -56,6 +56,25 @@ func (suite *MessageTestSuite) TestSaveMessage_Insert() {
 	suite.equalMessage(msg, got)
 }
 
+func (suite *MessageTestSuite) TestSaveMessage_ImageURL() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+	msg := lilith.Message{
+		ChatID:    chat.ID,
+		MessageID: 100,
+		Text:      "look at this",
+		ImageURL:  "https://files.example/photo.jpg",
+	}
+
+	err := suite.db.SaveMessage(ctx, msg)
+	suite.Require().NoError(err)
+
+	got, err := suite.db.GetMessage(ctx, msg.ChatID, msg.MessageID)
+	suite.Require().NoError(err)
+	suite.equalMessage(msg, got)
+}
+
 func (suite *MessageTestSuite) TestSaveMessage_DoNothingOnConflict() {
 	ctx := suite.T().Context()
 

@@ -171,7 +171,7 @@ func run(ctx context.Context, _ *zap.Logger, t *app.Telemetry) error {
 	staticURL := os.Getenv("STATIC_URL")
 	var staticServer *static.Server
 	if staticAddr != "" && staticURL != "" {
-		staticServer = static.New(staticAddr, staticURL)
+		staticServer = static.New(staticAddr, staticURL, "img")
 		fileStore = staticServer
 	}
 

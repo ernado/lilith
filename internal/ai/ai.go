@@ -97,6 +97,17 @@ func weatherTool() openrouter.Tool {
 	}
 }
 
+// imagePart builds a high-detail image content part for a hosted image URL.
+func imagePart(url string) openrouter.ChatMessagePart {
+	return openrouter.ChatMessagePart{
+		Type: openrouter.ChatMessagePartTypeImageURL,
+		ImageURL: &openrouter.ChatMessageImageURL{
+			URL:    url,
+			Detail: openrouter.ImageURLDetailHigh,
+		},
+	}
+}
+
 // buildResponseDialog assembles the OpenRouter messages for a reply from the
 // domain request.
 func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletionMessage, error) {
@@ -144,6 +155,23 @@ func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletio
 		if err != nil {
 			return nil, errors.Wrap(err, "marshal dialog context")
 		}
+
+		// Attach any image persisted with the history message so the model can
+		// reference it later, not just at the moment it was first received.
+		if msg := req.History[i].Message; msg != nil && msg.ImageURL != "" {
+			dialog = append(dialog, openrouter.ChatCompletionMessage{
+				Role: openrouter.ChatMessageRoleUser,
+				Content: openrouter.Content{
+					Multi: []openrouter.ChatMessagePart{
+						{Type: openrouter.ChatMessagePartTypeText, Text: string(data)},
+						imagePart(msg.ImageURL),
+					},
+				},
+			})
+
+			continue
+		}
+
 		dialog = append(dialog, openrouter.UserMessage(string(data)))
 	}
 
@@ -168,15 +196,7 @@ func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletio
 		dialog = append(dialog, openrouter.ChatCompletionMessage{
 			Role: openrouter.ChatMessageRoleUser,
 			Content: openrouter.Content{
-				Multi: []openrouter.ChatMessagePart{
-					{
-						Type: openrouter.ChatMessagePartTypeImageURL,
-						ImageURL: &openrouter.ChatMessageImageURL{
-							URL:    req.ImageURL,
-							Detail: openrouter.ImageURLDetailHigh,
-						},
-					},
-				},
+				Multi: []openrouter.ChatMessagePart{imagePart(req.ImageURL)},
 			},
 		})
 	}

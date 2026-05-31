@@ -1,13 +1,16 @@
-// Package static implements a temporary in-memory file server.
+// Package static implements a disk-backed file server. Uploaded files are
+// written to a local directory and served over HTTP so they survive restarts
+// (in-memory storage would lose images referenced by persisted chat history).
 package static
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ernado/lilith"
@@ -17,38 +20,41 @@ import (
 
 var _ lilith.FileStore = (*Server)(nil)
 
-// Server is a temporary in-memory file server.
-// Files are stored in memory and served over HTTP.
+// Server is a disk-backed file server. Files are stored under dir and served
+// over HTTP.
 type Server struct {
 	addr    string
 	baseURL string
-
-	mu    sync.RWMutex
-	files map[string][]byte
+	dir     string
 }
 
-// New creates a new Server that listens on addr and uses baseURL as the URL prefix.
-func New(addr, baseURL string) *Server {
+// New creates a new Server that listens on addr, uses baseURL as the URL prefix
+// and persists uploaded files under dir.
+func New(addr, baseURL, dir string) *Server {
 	return &Server{
 		addr:    addr,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		files:   make(map[string][]byte),
+		dir:     dir,
 	}
 }
 
-// Upload reads all data from r, stores it under a new UUID, and returns the
-// public URL for the uploaded file.
+// Upload reads all data from r, writes it under a new UUID in the storage
+// directory, and returns the public URL for the uploaded file.
 func (s *Server) Upload(r io.Reader) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return "", errors.Wrap(err, "read")
 	}
 
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return "", errors.Wrap(err, "create dir")
+	}
+
 	id := uuid.New().String()
 
-	s.mu.Lock()
-	s.files[id] = data
-	s.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(s.dir, id), data, 0o644); err != nil {
+		return "", errors.Wrap(err, "write file")
+	}
 
 	return s.baseURL + "/" + id, nil
 }
@@ -76,17 +82,21 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/")
-
-	s.mu.RLock()
-	data, ok := s.files[id]
-	s.mu.RUnlock()
-
-	if !ok {
+	// path.Base strips any directory components, preventing path traversal out
+	// of the storage directory.
+	id := path.Base(r.URL.Path)
+	if id == "." || id == "/" {
 		http.NotFound(w, r)
 		return
 	}
 
+	f, err := os.Open(filepath.Join(s.dir, id))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer func() { _ = f.Close() }()
+
 	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeContent(w, r, id, time.Time{}, bytes.NewReader(data))
+	http.ServeContent(w, r, id, time.Time{}, f)
 }
