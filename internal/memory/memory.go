@@ -43,14 +43,14 @@ func (m *Memory) Notes(ctx context.Context, chatID int64) ([]lilith.ChatNote, er
 // Maintain runs the per-message notes policy: when enough messages have
 // accumulated since the last snapshot it regenerates the snapshot, otherwise it
 // evaluates the single message for a note.
-func (m *Memory) Maintain(ctx context.Context, chatID, currentMsgID int64, msg lilith.Message) error {
-	needed, err := m.isNotesNeeded(ctx, chatID, currentMsgID)
+func (m *Memory) Maintain(ctx context.Context, chatID int64, msg lilith.Message) error {
+	needed, err := m.isNotesNeeded(ctx, chatID, msg.MessageID)
 	if err != nil {
 		return errors.Wrap(err, "is notes needed")
 	}
 
 	if needed {
-		return m.generateNotes(ctx, chatID, currentMsgID)
+		return m.generateNotes(ctx, chatID, msg.MessageID)
 	}
 
 	return m.generateNoteForMessage(ctx, chatID, msg)

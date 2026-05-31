@@ -1026,7 +1026,7 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		}
 
 		go func() {
-			if err := a.memory.Maintain(ctx, cc.chatID, int64(m.ID), savedMsg); err != nil {
+			if err := a.memory.Maintain(ctx, cc.chatID, savedMsg); err != nil {
 				lg.Error("maintain notes", zap.Error(err))
 			}
 		}()
