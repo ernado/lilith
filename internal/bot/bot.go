@@ -979,13 +979,18 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		return nil
 	}
 
+	hasAdminRights := cc.userIsAdmin || cc.userIsCreator
+	if cc.chatType == lilith.ChatTypePrivate {
+		hasAdminRights = true
+	}
+
 	switch {
 	case m.Message == "/start" || m.Message == "/start@"+a.self.Username:
 		if _, err := reply.Text(ctx, "Привет, "+user.FirstName+"!"); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	case m.Message == "/lobotomy" || m.Message == "/lobotomy@"+a.self.Username:
-		if !cc.userIsAdmin && !cc.userIsCreator {
+		if !hasAdminRights {
 			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
 				return errors.Wrap(err, "send message")
 			}
@@ -1029,8 +1034,7 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return errors.Wrap(err, "send message")
 		}
 	case strings.HasPrefix(m.Message, "/model ") || strings.HasPrefix(m.Message, "/model@"+a.self.Username+" "):
-		// In a one-to-one chat the user has full control, so skip the admin check.
-		if cc.chatType != lilith.ChatTypePrivate && !cc.userIsAdmin && !cc.userIsCreator {
+		if !hasAdminRights {
 			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
 				return errors.Wrap(err, "send message")
 			}
