@@ -236,8 +236,11 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			MaxTokens: maxTokens,
 			Tools:     tools,
 		}, openrouter.ChatCompletionFallbackPolicy{
-			Models:     []string{"x-ai/grok-4.3"},
-			ErrorCodes: []int{400, 402, 429},
+			Models: []string{
+				"qwen/qwen3.6-flash",
+				"x-ai/grok-4.3",
+			},
+			ErrorCodes: []int{400, 402, 429, 404},
 		})
 		close(done)
 
@@ -251,6 +254,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				zap.Int("prompt_tokens", u.PromptTokens),
 				zap.Int("completion_tokens", u.CompletionTokens),
 				zap.Int("total_tokens", u.TotalTokens),
+				zap.String("model", resp.Model),
 			)
 		}
 
