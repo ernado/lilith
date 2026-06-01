@@ -483,7 +483,6 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 // note text. An empty string means no note is needed.
 func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, msg lilith.Message) (string, error) {
 	dialog := []openrouter.ChatCompletionMessage{
-		openrouter.SystemMessage(prompt.Character),
 		openrouter.SystemMessage(prompt.NoteSingle),
 	}
 
@@ -492,7 +491,7 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 		for _, n := range existing {
 			noteLines = append(noteLines, n.Text)
 		}
-		dialog = append(dialog, openrouter.SystemMessage(
+		dialog = append(dialog, openrouter.UserMessage(
 			"Существующие заметки:\n"+strings.Join(noteLines, "\n"),
 		))
 	}
@@ -501,13 +500,13 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 	if err != nil {
 		return "", errors.Wrap(err, "marshal message")
 	}
+	dialog = append(dialog, openrouter.UserMessage("Текущее сообщение:"))
 	dialog = append(dialog, openrouter.UserMessage(string(data)))
 
 	resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-		Model:       c.model,
-		Messages:    dialog,
-		MaxTokens:   maxNotesTokens,
-		ServiceTier: openrouter.ServiceTierFlex,
+		Model:     c.model,
+		Messages:  dialog,
+		MaxTokens: maxNotesTokens,
 	})
 	if err != nil {
 		return "", errors.Wrap(err, "generate note for message")
