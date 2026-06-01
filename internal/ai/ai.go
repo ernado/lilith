@@ -33,6 +33,13 @@ const (
 
 	// minNoteLen is the minimum length of a single-message note worth keeping.
 	minNoteLen = 40
+
+	// maxContextImages is the maximum number of most-recent images attached to
+	// the model context. Older images are replaced with imageTooOldText.
+	maxContextImages = 3
+
+	// imageTooOldText replaces images that fall outside the most-recent window.
+	imageTooOldText = "[image too old]"
 )
 
 var _ lilith.AI = (*Client)(nil)
@@ -108,6 +115,30 @@ func imagePart(url string) openrouter.ChatMessagePart {
 	}
 }
 
+// keptHistoryImageIndices returns the set of req.History indices whose image is
+// recent enough to attach to the model context. Only the most recent
+// maxContextImages images are kept, counting the current message's image (if
+// any) as the newest. History is oldest-first, so newer images have higher
+// indices.
+func keptHistoryImageIndices(req lilith.ResponseRequest) map[int]bool {
+	keep := make(map[int]bool)
+
+	budget := maxContextImages
+	if req.ImageURL != "" {
+		// The current message's image is the newest and always takes a slot.
+		budget--
+	}
+
+	for i := len(req.History) - 1; i >= 0 && budget > 0; i-- {
+		if msg := req.History[i].Message; msg != nil && msg.ImageURL != "" {
+			keep[i] = true
+			budget--
+		}
+	}
+
+	return keep
+}
+
 // buildResponseDialog assembles the OpenRouter messages for a reply from the
 // domain request.
 func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletionMessage, error) {
@@ -150,24 +181,31 @@ func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletio
 
 	dialog = append(dialog, openrouter.UserMessage("Предыдущая переписка:"))
 
+	keepImage := keptHistoryImageIndices(req)
+
 	for i := range req.History {
 		data, err := json.Marshal(req.History[i])
 		if err != nil {
 			return nil, errors.Wrap(err, "marshal dialog context")
 		}
 
-		// Attach any image persisted with the history message so the model can
-		// reference it later, not just at the moment it was first received.
 		if msg := req.History[i].Message; msg != nil && msg.ImageURL != "" {
-			dialog = append(dialog, openrouter.ChatCompletionMessage{
-				Role: openrouter.ChatMessageRoleUser,
-				Content: openrouter.Content{
-					Multi: []openrouter.ChatMessagePart{
-						{Type: openrouter.ChatMessagePartTypeText, Text: string(data)},
-						imagePart(msg.ImageURL),
+			// Attach the persisted image only for the most recent messages so the
+			// model can still reference them; older images are too costly to keep
+			// and are replaced with a placeholder.
+			if keepImage[i] {
+				dialog = append(dialog, openrouter.ChatCompletionMessage{
+					Role: openrouter.ChatMessageRoleUser,
+					Content: openrouter.Content{
+						Multi: []openrouter.ChatMessagePart{
+							{Type: openrouter.ChatMessagePartTypeText, Text: string(data)},
+							imagePart(msg.ImageURL),
+						},
 					},
-				},
-			})
+				})
+			} else {
+				dialog = append(dialog, openrouter.UserMessage(string(data)+"\n"+imageTooOldText))
+			}
 
 			continue
 		}
@@ -269,6 +307,11 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				zap.Int("total_tokens", u.TotalTokens),
 				zap.String("model", resp.Model),
 			)
+		}
+
+		if len(resp.Choices) == 0 {
+			lg.Warn("Empty choices in response, retrying")
+			continue
 		}
 
 		msg := resp.Choices[0].Message
