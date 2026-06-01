@@ -8,6 +8,9 @@ import "context"
 type ResponseRequest struct {
 	// Model, when non-empty, overrides the default model for this request.
 	Model string
+	// CharacterPrompt, when non-empty, is appended to the base character
+	// system prompt to customise the bot's persona for this chat.
+	CharacterPrompt string
 	// CurrentTime is a preformatted, human-readable timestamp injected into the
 	// system prompt (e.g. "29 May 26 14:00 +0300, пятница.").
 	CurrentTime string

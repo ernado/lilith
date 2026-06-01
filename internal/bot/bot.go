@@ -915,13 +915,14 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 	}
 
 	req := lilith.ResponseRequest{
-		Model:       chat.Model,
-		CurrentTime: currentTime,
-		Notes:       notes,
-		Members:     members,
-		Self:        self,
-		History:     history,
-		Idle:        true,
+		Model:           chat.Model,
+		CharacterPrompt: chat.CharacterPrompt,
+		CurrentTime:     currentTime,
+		Notes:           notes,
+		Members:         members,
+		Self:            self,
+		History:         history,
+		Idle:            true,
 	}
 
 	result, err := a.ai.Respond(ctx, req)
@@ -1447,12 +1448,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		}
 
 		req := lilith.ResponseRequest{
-			Model:       chat.Model,
-			CurrentTime: currentTime,
-			Notes:       notes,
-			Members:     members,
-			Self:        self,
-			History:     history,
+			Model:           chat.Model,
+			CharacterPrompt: chat.CharacterPrompt,
+			CurrentTime:     currentTime,
+			Notes:           notes,
+			Members:         members,
+			Self:            self,
+			History:         history,
 			Current: lilith.Context{
 				Message:      &savedMsg,
 				User:         currentMember,

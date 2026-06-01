@@ -22,6 +22,9 @@ type Chat struct {
 	LastNotesMsgID int64
 	// Model is the per-chat model override. Empty means use the default model.
 	Model string
+	// CharacterPrompt is an additional system prompt appended to the base
+	// character prompt. Empty means no override.
+	CharacterPrompt string
 	// AccessHash is the Telegram access hash required to address channels.
 	// Zero for regular group chats.
 	AccessHash int64

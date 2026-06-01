@@ -147,10 +147,13 @@ func keptHistoryImageIndices(req lilith.ResponseRequest) map[int]bool {
 // buildResponseDialog assembles the OpenRouter messages for a reply from the
 // domain request.
 func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletionMessage, error) {
+	characterParts := []string{prompt.Protocol, prompt.Character}
+	if req.CharacterPrompt != "" {
+		characterParts = append(characterParts, req.CharacterPrompt)
+	}
+
 	dialog := []openrouter.ChatCompletionMessage{
-		openrouter.SystemMessage(strings.Join([]string{
-			prompt.Protocol, prompt.Character, req.CurrentTime,
-		}, "\n")),
+		openrouter.SystemMessage(strings.Join(append(characterParts, req.CurrentTime), "\n")),
 	}
 
 	if len(req.Notes) > 0 {
