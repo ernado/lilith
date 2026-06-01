@@ -54,4 +54,6 @@ type AI interface {
 	// GenerateNote decides whether a single message is worth noting and returns
 	// the note text, given any existing notes. The returned text may be empty.
 	GenerateNote(ctx context.Context, existing []ChatNote, msg Message) (string, error)
+	// DefaultModel returns the model name used when no per-chat override is set.
+	DefaultModel() string
 }

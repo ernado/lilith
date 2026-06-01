@@ -61,6 +61,11 @@ func New(ai *openrouter.Client, model string, weather lilith.WeatherProvider) *C
 	}
 }
 
+// DefaultModel returns the model name used when no per-chat override is set.
+func (c *Client) DefaultModel() string {
+	return c.model
+}
+
 func emojiTool() openrouter.Tool {
 	return openrouter.Tool{
 		Type: openrouter.ToolTypeFunction,

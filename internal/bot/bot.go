@@ -1275,7 +1275,8 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return nil
 		}
 
-		text := "Модель по умолчанию."
+		defaultModel := a.ai.DefaultModel()
+		text := "Текущая модель: " + defaultModel + " (по умолчанию)."
 		if chat.Model != "" {
 			text = "Текущая модель: " + chat.Model
 		}
