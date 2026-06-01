@@ -167,6 +167,10 @@ func (a *App) Run(ctx context.Context) error {
 						Description: "Очистить память",
 					},
 					{
+						Command:     "delete",
+						Description: "Удалить сообщение из памяти (ответом)",
+					},
+					{
 						Command:     "model",
 						Description: "Показать или установить модель",
 					},
@@ -959,6 +963,26 @@ func (a *App) maintainNotes(ctx context.Context, chatID int64, msg lilith.Messag
 	}()
 }
 
+// deleteChatMessage removes a message from the actual Telegram chat, choosing
+// the channel or basic-chat deletion API based on the chat type.
+func (a *App) deleteChatMessage(ctx context.Context, cc *chatContext, messageID int64) error {
+	if cc.chatType == lilith.ChatTypeChannel {
+		_, err := a.api.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: cc.chatID, AccessHash: cc.accessHash},
+			ID:      []int{int(messageID)},
+		})
+
+		return err
+	}
+
+	_, err := a.api.MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
+		Revoke: true,
+		ID:     []int{int(messageID)},
+	})
+
+	return err
+}
+
 func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -1174,6 +1198,69 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		lg.Info("Lobotomy performed", zap.Int64("chat_id", cc.chatID))
 
 		if _, err := reply.Text(ctx, "Память очищена."); err != nil {
+			return errors.Wrap(err, "send message")
+		}
+	case m.Message == "/delete" || m.Message == "/delete@"+a.self.Username:
+		if !hasAdminRights {
+			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		if replyToID == nil {
+			if _, err := reply.Text(ctx, "Ответь этой командой на сообщение, которое нужно удалить из памяти."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		// Fetch the message first so we can clean up its associated image after
+		// the row is gone.
+		deleted, err := a.db.GetMessage(ctx, cc.chatID, *replyToID)
+		if err != nil {
+			lg.Warn("Message to delete not found in db",
+				zap.Int64("message_id", *replyToID),
+				zap.Error(err),
+			)
+		}
+
+		if err := a.db.DeleteMessage(ctx, cc.chatID, *replyToID); err != nil {
+			lg.Error("delete message failed", zap.Error(err), zap.Int64("message_id", *replyToID))
+
+			if _, err := reply.Text(ctx, "Ошибка при удалении сообщения."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		if deleted != nil && deleted.ImageURL != "" && a.files != nil {
+			if err := a.files.Delete(deleted.ImageURL); err != nil {
+				lg.Warn("Failed to delete image file",
+					zap.String("url", deleted.ImageURL),
+					zap.Error(err),
+				)
+			}
+		}
+
+		// Also remove the message from the actual chat. A failure here (e.g. the
+		// bot lacks delete rights) is non-fatal: history is already cleaned.
+		if err := a.deleteChatMessage(ctx, cc, *replyToID); err != nil {
+			lg.Warn("Failed to delete message from chat",
+				zap.Int64("message_id", *replyToID),
+				zap.Error(err),
+			)
+		}
+
+		lg.Info("Deleted message from history",
+			zap.Int64("chat_id", cc.chatID),
+			zap.Int64("message_id", *replyToID),
+		)
+
+		if _, err := reply.Text(ctx, "Сообщение удалено."); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	case m.Message == "/model" || m.Message == "/model@"+a.self.Username:

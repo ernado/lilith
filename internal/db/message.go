@@ -99,6 +99,24 @@ func (db *DB) SaveMessage(ctx context.Context, msg lilith.Message) error {
 	return nil
 }
 
+// DeleteMessage removes a single message from a chat's history by its ID.
+// Deleting a message that does not exist is not an error.
+func (db *DB) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	q := psql.Delete("chat_messages").
+		Where("chat_id = ? AND message_id = ?", chatID, messageID)
+
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return errors.Wrap(err, "build query")
+	}
+
+	if _, err := db.pgx.Exec(ctx, sql, args...); err != nil {
+		return errors.Wrap(err, "exec")
+	}
+
+	return nil
+}
+
 // GetLastMessages returns the last n messages for a given chat ID up to and including
 // lastMessageID, ordered by message_id ascending.
 func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64, lastMessageID int64) ([]lilith.Message, error) {

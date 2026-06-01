@@ -9,6 +9,8 @@ type DB interface {
 	GetChats(ctx context.Context) ([]Chat, error)
 	SetLastNotesMsgID(ctx context.Context, chatID int64, msgID int64) (prev int64, err error)
 	SaveMessage(ctx context.Context, msg Message) error
+	// DeleteMessage removes a single message from a chat's history by its ID.
+	DeleteMessage(ctx context.Context, chatID, messageID int64) error
 	GetMessage(ctx context.Context, chatID, messageID int64) (*Message, error)
 	GetLastMessages(ctx context.Context, chatID int64, n uint64, lastMessageID int64) ([]Message, error)
 	GetLastMessage(ctx context.Context, chatID int64) (*Message, error)

@@ -280,6 +280,33 @@ func (suite *MessageTestSuite) TestGetLastMessageByAuthorInTopic() {
 	suite.Nil(got)
 }
 
+func (suite *MessageTestSuite) TestDeleteMessage() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+	suite.Require().NoError(suite.db.SaveMessage(ctx, lilith.Message{ChatID: chat.ID, MessageID: 100, Text: "a"}))
+	suite.Require().NoError(suite.db.SaveMessage(ctx, lilith.Message{ChatID: chat.ID, MessageID: 101, Text: "b"}))
+
+	suite.Require().NoError(suite.db.DeleteMessage(ctx, chat.ID, 100))
+
+	_, err := suite.db.GetMessage(ctx, chat.ID, 100)
+	suite.Error(err)
+
+	// Other messages are untouched.
+	got, err := suite.db.GetMessage(ctx, chat.ID, 101)
+	suite.Require().NoError(err)
+	suite.Equal("b", got.Text)
+}
+
+func (suite *MessageTestSuite) TestDeleteMessage_Missing() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	// Deleting a non-existent message is a no-op, not an error.
+	suite.Require().NoError(suite.db.DeleteMessage(ctx, chat.ID, 999))
+}
+
 func TestMessageTestSuite(t *testing.T) {
 	t.Parallel()
 

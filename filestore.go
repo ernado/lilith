@@ -6,4 +6,7 @@ import "io"
 // (e.g. photos) so it can be passed to the model as an image URL.
 type FileStore interface {
 	Upload(r io.Reader) (string, error)
+	// Delete removes the blob previously returned as url. A missing blob is not
+	// an error.
+	Delete(url string) error
 }

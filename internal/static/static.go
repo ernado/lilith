@@ -59,6 +59,23 @@ func (s *Server) Upload(r io.Reader) (string, error) {
 	return s.baseURL + "/" + id, nil
 }
 
+// Delete removes the stored file referenced by url. The file name is the last
+// path segment of url. A missing file is not treated as an error.
+func (s *Server) Delete(url string) error {
+	// path.Base strips host and directory components, preventing path traversal
+	// out of the storage directory.
+	id := path.Base(url)
+	if id == "." || id == "/" {
+		return nil
+	}
+
+	if err := os.Remove(filepath.Join(s.dir, id)); err != nil && !os.IsNotExist(err) {
+		return errors.Wrap(err, "remove file")
+	}
+
+	return nil
+}
+
 // Run starts the HTTP server and blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
