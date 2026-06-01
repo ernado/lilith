@@ -249,17 +249,11 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			}()
 		}
 
-		resp, err := c.ai.CreateChatCompletionWithFallbackPolicy(ctx, openrouter.ChatCompletionRequest{
+		resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 			Model:     model,
 			Messages:  dialog,
 			MaxTokens: maxTokens,
 			Tools:     tools,
-		}, openrouter.ChatCompletionFallbackPolicy{
-			Models: []string{
-				"qwen/qwen3.6-flash",
-				"x-ai/grok-4.3",
-			},
-			ErrorCodes: []int{400, 402, 429, 404},
 		})
 		close(done)
 
