@@ -270,7 +270,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 	}
 
 	result := &lilith.ResponseResult{}
-	serviceTier := openrouter.ServiceTierFlex
+	serviceTier := openrouter.ServiceTierDefault
 
 	for i := range maxIterations {
 		if i > 0 {
@@ -318,12 +318,6 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				zap.String("model", resp.Model),
 				zap.String("tier", string(resp.ServiceTier)),
 			)
-		}
-
-		if len(resp.Choices) == 0 && serviceTier == openrouter.ServiceTierFlex {
-			serviceTier = openrouter.ServiceTierDefault
-			lg.Info("Upgrading service tier for zero response")
-			continue
 		}
 
 		if len(resp.Choices) == 0 {
