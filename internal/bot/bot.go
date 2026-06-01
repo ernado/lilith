@@ -782,6 +782,10 @@ func (a *App) checkIdleChats(ctx context.Context) error {
 }
 
 func (a *App) checkIdleChat(ctx context.Context, chat lilith.Chat) error {
+	if !chat.IdleEnabled {
+		return nil
+	}
+
 	last, err := a.db.GetLastMessage(ctx, chat.ID)
 	if err != nil {
 		return errors.Wrap(err, "get last message")

@@ -41,7 +41,7 @@ func (db *DB) UpsertChat(ctx context.Context, chat lilith.Chat) error {
 
 // GetChat returns a chat by ID.
 func (db *DB) GetChat(ctx context.Context, id int64) (*lilith.Chat, error) {
-	q := psql.Select("id", "info", "last_notes_msg_id", "model", "character_prompt", "access_hash", "type").
+	q := psql.Select("id", "info", "last_notes_msg_id", "model", "character_prompt", "idle_enabled", "access_hash", "type").
 		From("chat").
 		Where("id = ?", id)
 
@@ -53,7 +53,7 @@ func (db *DB) GetChat(ctx context.Context, id int64) (*lilith.Chat, error) {
 	var chat lilith.Chat
 
 	err = db.pgx.QueryRow(ctx, sql, args...).Scan(
-		&chat.ID, &chat.Info, &chat.LastNotesMsgID, &chat.Model, &chat.CharacterPrompt, &chat.AccessHash, &chat.Type,
+		&chat.ID, &chat.Info, &chat.LastNotesMsgID, &chat.Model, &chat.CharacterPrompt, &chat.IdleEnabled, &chat.AccessHash, &chat.Type,
 	)
 	if err != nil {
 		return nil, errors.Wrap(err, "scan")
@@ -82,7 +82,7 @@ func (db *DB) SetChatModel(ctx context.Context, chatID int64, model string) erro
 
 // GetChats returns all chats.
 func (db *DB) GetChats(ctx context.Context) ([]lilith.Chat, error) {
-	q := psql.Select("id", "info", "last_notes_msg_id", "model", "character_prompt", "access_hash", "type").From("chat")
+	q := psql.Select("id", "info", "last_notes_msg_id", "model", "character_prompt", "idle_enabled", "access_hash", "type").From("chat")
 
 	sql, args, err := q.ToSql()
 	if err != nil {
@@ -100,7 +100,7 @@ func (db *DB) GetChats(ctx context.Context) ([]lilith.Chat, error) {
 	for rows.Next() {
 		var chat lilith.Chat
 
-		if err := rows.Scan(&chat.ID, &chat.Info, &chat.LastNotesMsgID, &chat.Model, &chat.CharacterPrompt, &chat.AccessHash, &chat.Type); err != nil {
+		if err := rows.Scan(&chat.ID, &chat.Info, &chat.LastNotesMsgID, &chat.Model, &chat.CharacterPrompt, &chat.IdleEnabled, &chat.AccessHash, &chat.Type); err != nil {
 			return nil, errors.Wrap(err, "scan")
 		}
 

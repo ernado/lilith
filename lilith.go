@@ -25,6 +25,9 @@ type Chat struct {
 	// CharacterPrompt is an additional system prompt appended to the base
 	// character prompt. Empty means no override.
 	CharacterPrompt string
+	// IdleEnabled, when true, allows the bot to send unprompted idle messages
+	// to this chat. Disabled by default (opt-in).
+	IdleEnabled bool
 	// AccessHash is the Telegram access hash required to address channels.
 	// Zero for regular group chats.
 	AccessHash int64

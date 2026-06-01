@@ -9,6 +9,7 @@
 | last_notes_msg_id  | BIGINT    | NOT NULL DEFAULT 0 |
 | model              | TEXT      | NOT NULL DEFAULT '' |
 | character_prompt   | TEXT      | NOT NULL DEFAULT '' |
+| idle_enabled       | BOOLEAN   | NOT NULL DEFAULT FALSE |
 | access_hash        | BIGINT    | NOT NULL DEFAULT 0 |
 | type               | TEXT      | NOT NULL DEFAULT 'channel' |
 
