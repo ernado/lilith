@@ -266,7 +266,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 
 	for i := range maxIterations {
 		if i > 0 {
-			lg.Info("Retrying after tool call", zap.Int("iteration", i))
+			lg.Info("Retrying", zap.Int("iteration", i))
 		}
 
 		done := make(chan struct{})
