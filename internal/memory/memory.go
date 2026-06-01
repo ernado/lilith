@@ -40,9 +40,8 @@ func (m *Memory) Notes(ctx context.Context, chatID int64) ([]lilith.ChatNote, er
 	return m.db.GetChatNotes(ctx, chatID)
 }
 
-// Maintain runs the per-message notes policy: when enough messages have
-// accumulated since the last snapshot it regenerates the snapshot, otherwise it
-// evaluates the single message for a note.
+// Maintain regenerates the notes snapshot when enough messages have accumulated
+// since the last one. It is a no-op otherwise.
 func (m *Memory) Maintain(ctx context.Context, chatID int64, msg lilith.Message) error {
 	needed, err := m.isNotesNeeded(ctx, chatID, msg.MessageID)
 	if err != nil {
@@ -53,7 +52,7 @@ func (m *Memory) Maintain(ctx context.Context, chatID int64, msg lilith.Message)
 		return m.generateNotes(ctx, chatID, msg.MessageID)
 	}
 
-	return m.generateNoteForMessage(ctx, chatID, msg)
+	return nil
 }
 
 // isNotesNeeded returns true when at least contextWindowMessages messages have
@@ -127,50 +126,6 @@ func (m *Memory) doGenerateNotes(ctx context.Context, chatID, currentMsgID int64
 		zap.Int64("msg_id", currentMsgID),
 		zap.String("text", text),
 	)
-
-	return nil
-}
-
-// generateNoteForMessage decides whether a single message is worth noting and,
-// if so, persists the note. Serialised per message via singleflight.
-func (m *Memory) generateNoteForMessage(ctx context.Context, chatID int64, msg lilith.Message) error {
-	key := "msg:" + strconv.FormatInt(msg.MessageID, 10)
-
-	_, err, _ := m.sfg.Do(key, func() (any, error) {
-		return nil, m.doGenerateNoteForMessage(ctx, chatID, msg)
-	})
-
-	return err
-}
-
-func (m *Memory) doGenerateNoteForMessage(ctx context.Context, chatID int64, msg lilith.Message) error {
-	lg := zctx.From(ctx).With(
-		zap.Int64("chat_id", chatID),
-		zap.Int64("msg_id", msg.MessageID),
-	)
-
-	lg.Info("doGenerateNoteForMessage")
-
-	existingNotes, err := m.db.GetChatNotes(ctx, chatID)
-	if err != nil {
-		return errors.Wrap(err, "get chat notes")
-	}
-
-	text, err := m.ai.GenerateNote(ctx, existingNotes, msg)
-	if err != nil {
-		return errors.Wrap(err, "generate note for message")
-	}
-
-	if text == "" {
-		lg.Info("No note needed for message")
-		return nil
-	}
-
-	if _, err := m.db.AddChatNote(ctx, chatID, text); err != nil {
-		return errors.Wrap(err, "add chat note")
-	}
-
-	lg.Info("Note generated for message")
 
 	return nil
 }
