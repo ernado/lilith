@@ -262,6 +262,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 	}
 
 	result := &lilith.ResponseResult{}
+	serviceTier := openrouter.ServiceTierFlex
 
 	for i := range maxIterations {
 		if i > 0 {
@@ -288,10 +289,11 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		}
 
 		resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-			Model:     model,
-			Messages:  dialog,
-			MaxTokens: maxTokens,
-			Tools:     tools,
+			Model:       model,
+			Messages:    dialog,
+			MaxTokens:   maxTokens,
+			Tools:       tools,
+			ServiceTier: serviceTier,
 		})
 		close(done)
 
@@ -306,12 +308,18 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				zap.Int("completion_tokens", u.CompletionTokens),
 				zap.Int("total_tokens", u.TotalTokens),
 				zap.String("model", resp.Model),
+				zap.String("tier", string(resp.ServiceTier)),
 			)
 		}
 
-		if len(resp.Choices) == 0 {
-			lg.Warn("Empty choices in response, retrying")
+		if len(resp.Choices) == 0 && serviceTier == openrouter.ServiceTierFlex {
+			serviceTier = openrouter.ServiceTierDefault
+			lg.Info("Upgrading service tier for zero response")
 			continue
+		}
+
+		if len(resp.Choices) == 0 {
+			return nil, errors.New("no choices found")
 		}
 
 		msg := resp.Choices[0].Message
@@ -444,9 +452,10 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 	dialog = append(dialog, openrouter.UserMessage("Сгенерируй заметки"))
 
 	resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-		Model:     c.model,
-		Messages:  dialog,
-		MaxTokens: maxNotesTokens,
+		Model:       c.model,
+		Messages:    dialog,
+		MaxTokens:   maxNotesTokens,
+		ServiceTier: openrouter.ServiceTierFlex,
 	})
 	if err != nil {
 		return "", errors.Wrap(err, "generate notes")
@@ -457,7 +466,12 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 			zap.Int("prompt_tokens", u.PromptTokens),
 			zap.Int("completion_tokens", u.CompletionTokens),
 			zap.Int("total_tokens", u.TotalTokens),
+			zap.String("tier", string(resp.ServiceTier)),
 		)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", errors.New("no choices found")
 	}
 
 	return strings.TrimSpace(resp.Choices[0].Message.Content.Text), nil
@@ -488,9 +502,10 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 	dialog = append(dialog, openrouter.UserMessage(string(data)))
 
 	resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-		Model:     c.model,
-		Messages:  dialog,
-		MaxTokens: maxNotesTokens,
+		Model:       c.model,
+		Messages:    dialog,
+		MaxTokens:   maxNotesTokens,
+		ServiceTier: openrouter.ServiceTierFlex,
 	})
 	if err != nil {
 		return "", errors.Wrap(err, "generate note for message")
@@ -502,6 +517,10 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 			zap.Int("completion_tokens", u.CompletionTokens),
 			zap.Int("total_tokens", u.TotalTokens),
 		)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", errors.New("no choices found")
 	}
 
 	text := strings.TrimSpace(resp.Choices[0].Message.Content.Text)

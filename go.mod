@@ -148,3 +148,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace github.com/revrost/go-openrouter => github.com/ernado/go-openrouter v1.6.1-0.20260601020710-169771574a23
