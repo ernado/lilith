@@ -19,6 +19,7 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/message/markdown"
 	"github.com/gotd/td/tg"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
@@ -1487,6 +1488,10 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return nil
 		}
 
+		styledOptions := markdown.String(func(id int64) (tg.InputUserClass, error) {
+			return &tg.InputUser{UserID: id}, nil
+		}, result.Text)
+
 		// In one-to-one chats there is no need to thread responses as replies;
 		// send directly to the chat instead.
 		sentMsg := lilith.Message{
@@ -1498,13 +1503,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			MessageThreadID: savedMsg.MessageThreadID,
 		}
 
-		send := reply.Text
+		send := reply.StyledText
 		if cc.chatType == lilith.ChatTypePrivate {
-			send = answer.Text
+			send = answer.StyledText
 			sentMsg.ReplyToID = nil
 		}
 
-		sentUpdate, err := send(ctx, result.Text)
+		sentUpdate, err := send(ctx, styledOptions)
 		if err != nil {
 			lg.Warn("Failed to send response", zap.Error(err))
 			return errors.Wrap(err, "send response")
