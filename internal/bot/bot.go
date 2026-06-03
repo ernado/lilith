@@ -59,6 +59,11 @@ const (
 	// maxScrapeTextLen caps how many runes of scraped body text are kept for
 	// model context.
 	maxScrapeTextLen = 2000
+
+	// maintainNotesTimeout bounds background notes maintenance. It is detached
+	// from the request context so handling the next message cannot cancel it,
+	// but still capped so a hung completion cannot leak the goroutine forever.
+	maintainNotesTimeout = 5 * time.Minute
 )
 
 // chatMemberKey is the cache key for a chat member.
@@ -962,7 +967,15 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 // maintainNotes folds a message into the chat's long-term notes in the
 // background. Used for every recorded message, including those from bots.
 func (a *App) maintainNotes(ctx context.Context, chatID int64, msg lilith.Message) {
+	// Detach from the request lifetime, keeping context values (logger, trace)
+	// but dropping cancellation, so returning from the handler does not abort
+	// the in-flight completion. A timeout still bounds the work.
+	ctx = context.WithoutCancel(ctx)
+
 	go func() {
+		ctx, cancel := context.WithTimeout(ctx, maintainNotesTimeout)
+		defer cancel()
+
 		if err := a.memory.Maintain(ctx, chatID, msg); err != nil {
 			zctx.From(ctx).Error("maintain notes", zap.Error(err))
 		}
