@@ -436,7 +436,7 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 			noteLines = append(noteLines, n.Text)
 		}
 		dialog = append(dialog, openrouter.UserMessage(
-			"Существующие заметки:\n"+strings.Join(noteLines, "\n"),
+			"Текущая память о чате:\n"+strings.Join(noteLines, "\n"),
 		))
 	}
 
@@ -448,7 +448,7 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 		dialog = append(dialog, openrouter.UserMessage(string(data)))
 	}
 
-	dialog = append(dialog, openrouter.UserMessage("Сгенерируй заметки"))
+	dialog = append(dialog, openrouter.UserMessage("Верни полный обновлённый список заметок"))
 
 	resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 		Model:       c.model,

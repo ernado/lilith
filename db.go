@@ -20,9 +20,11 @@ type DB interface {
 	GetChatMember(ctx context.Context, chatID, userID int64) (*ChatMember, error)
 	GetChatMembers(ctx context.Context, chatID int64) ([]ChatMember, error)
 	AddChatNote(ctx context.Context, chatID int64, text string) (*ChatNote, error)
+	// ReplaceChatNotes atomically replaces all of a chat's notes with a single
+	// consolidated note. It is the write path for the evolving memory document,
+	// which is rewritten in full on each regeneration.
+	ReplaceChatNotes(ctx context.Context, chatID int64, text string) (*ChatNote, error)
 	GetChatNotes(ctx context.Context, chatID int64) ([]ChatNote, error)
-	DeleteChatNote(ctx context.Context, chatID, noteID int64) error
-	TrimChatNotes(ctx context.Context, chatID int64, maxNotes int) error
 	SetChatModel(ctx context.Context, chatID int64, model string) error
 	Lobotomy(ctx context.Context, chatID int64) error
 }

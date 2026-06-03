@@ -33,6 +33,53 @@ func (db *DB) AddChatNote(ctx context.Context, chatID int64, text string) (*lili
 	return &note, nil
 }
 
+// ReplaceChatNotes atomically replaces all of a chat's notes with a single
+// consolidated note and returns the created note. Replacing in a transaction
+// keeps the notes as one evolving memory document rather than an unbounded log.
+func (db *DB) ReplaceChatNotes(ctx context.Context, chatID int64, text string) (*lilith.ChatNote, error) {
+	tx, err := db.pgx.Begin(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "begin tx")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	deleteSQL, deleteArgs, err := psql.Delete("chat_notes").
+		Where("chat_id = ?", chatID).
+		ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "build delete query")
+	}
+
+	if _, err := tx.Exec(ctx, deleteSQL, deleteArgs...); err != nil {
+		return nil, errors.Wrap(err, "delete notes")
+	}
+
+	insertSQL, insertArgs, err := psql.Insert("chat_notes").
+		Columns("chat_id", "text").
+		Values(chatID, text).
+		Suffix("RETURNING id, chat_id, text").
+		ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "build insert query")
+	}
+
+	var note lilith.ChatNote
+
+	if err := tx.QueryRow(ctx, insertSQL, insertArgs...).Scan(
+		&note.ID,
+		&note.ChatID,
+		&note.Text,
+	); err != nil {
+		return nil, errors.Wrap(err, "scan")
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, errors.Wrap(err, "commit tx")
+	}
+
+	return &note, nil
+}
+
 // GetChatNotes returns all notes for the given chat.
 func (db *DB) GetChatNotes(ctx context.Context, chatID int64) ([]lilith.ChatNote, error) {
 	q := psql.Select("id", "chat_id", "text").
@@ -68,41 +115,4 @@ func (db *DB) GetChatNotes(ctx context.Context, chatID int64) ([]lilith.ChatNote
 	}
 
 	return notes, nil
-}
-
-// DeleteChatNote removes a note by its ID and chat ID.
-func (db *DB) DeleteChatNote(ctx context.Context, chatID, noteID int64) error {
-	q := psql.Delete("chat_notes").
-		Where("id = ? AND chat_id = ?", noteID, chatID)
-
-	sql, args, err := q.ToSql()
-	if err != nil {
-		return errors.Wrap(err, "build query")
-	}
-
-	if _, err := db.pgx.Exec(ctx, sql, args...); err != nil {
-		return errors.Wrap(err, "exec")
-	}
-
-	return nil
-}
-
-// TrimChatNotes removes the oldest notes for a chat, keeping at most maxNotes.
-func (db *DB) TrimChatNotes(ctx context.Context, chatID int64, maxNotes int) error {
-	q := psql.Delete("chat_notes").
-		Where(
-			"id IN (SELECT id FROM chat_notes WHERE chat_id = ? ORDER BY id ASC LIMIT (GREATEST(0, (SELECT COUNT(*) FROM chat_notes WHERE chat_id = ?) - ?)))",
-			chatID, chatID, maxNotes,
-		)
-
-	sql, args, err := q.ToSql()
-	if err != nil {
-		return errors.Wrap(err, "build query")
-	}
-
-	if _, err := db.pgx.Exec(ctx, sql, args...); err != nil {
-		return errors.Wrap(err, "exec")
-	}
-
-	return nil
 }
