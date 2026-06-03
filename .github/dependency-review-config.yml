@@ -8,4 +8,4 @@ allow_licenses:
   - 'BSD-3-Clause'
   - 'Apache-2.0'
   - 'LicenseRef-scancode-google-patent-license-golang'
-  - 'MIT AND PostgreSQL'
+  - 'PostgreSQL'
