@@ -331,6 +331,10 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 					Emoji string `json:"emoji"`
 				}
 
+				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
+					return nil, errors.Wrap(err, "unmarshal arguments")
+				}
+
 				toolContent, err := json.Marshal(struct {
 					Emoji string `json:"reply_emoji"`
 				}{
@@ -356,9 +360,6 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 					},
 				)
 
-				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
-					return nil, errors.Wrap(err, "unmarshal arguments")
-				}
 				if text, ok := reaction.Canonicalize(args.Emoji); ok {
 					result.Reactions = append(result.Reactions, text)
 				}
