@@ -16,6 +16,8 @@ type ScrapeResult struct {
 	Text string
 }
 
+//go:generate go tool moq -out internal/mock/scraper.go -pkg mock . Scraper
+
 // Scraper fetches and extracts readable content from web pages. Implementations
 // follow redirects and present a browser-like identity to the remote server.
 type Scraper interface {

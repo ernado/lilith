@@ -2,6 +2,8 @@ package lilith
 
 import "context"
 
+//go:generate go tool moq -out internal/mock/memory.go -pkg mock . Memory
+
 // Memory is the chat-notes layer. It owns the policy for when and how notes are
 // generated and persisted; the orchestrator delegates note maintenance to it.
 type Memory interface {

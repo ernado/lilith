@@ -44,6 +44,8 @@ type ResponseResult struct {
 	Reactions []string
 }
 
+//go:generate go tool moq -out internal/mock/ai.go -pkg mock . AI
+
 // AI is the language-model gateway. Implementations are stateless with respect
 // to chat storage: all required context is passed in the request, and any
 // persistence is the caller's responsibility.

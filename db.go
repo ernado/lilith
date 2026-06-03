@@ -2,6 +2,8 @@ package lilith
 
 import "context"
 
+//go:generate go tool moq -out internal/mock/db.go -pkg mock . DB
+
 // DB is the database interface.
 type DB interface {
 	UpsertChat(ctx context.Context, chat Chat) error

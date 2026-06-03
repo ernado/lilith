@@ -8,21 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ernado/lilith"
+	"github.com/ernado/lilith/internal/mock"
 )
-
-// fakeMemory implements lilith.Memory; Maintain delegates to a func so a test
-// can observe the context it is invoked with.
-type fakeMemory struct {
-	maintain func(ctx context.Context, chatID int64, msg lilith.Message) error
-}
-
-func (f fakeMemory) Maintain(ctx context.Context, chatID int64, msg lilith.Message) error {
-	return f.maintain(ctx, chatID, msg)
-}
-
-func (f fakeMemory) Notes(context.Context, int64) ([]lilith.ChatNote, error) {
-	return nil, nil
-}
 
 // maintainNotes must run detached from the request context: cancelling the
 // caller's context (as happens when the message handler returns) must not
@@ -34,8 +21,8 @@ func TestMaintainNotes_SurvivesRequestCancellation(t *testing.T) {
 	release := make(chan struct{})
 
 	a := &App{
-		memory: fakeMemory{
-			maintain: func(ctx context.Context, _ int64, _ lilith.Message) error {
+		memory: &mock.MemoryMock{
+			MaintainFunc: func(ctx context.Context, _ int64, _ lilith.Message) error {
 				entered <- ctx
 				<-release
 
