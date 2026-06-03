@@ -150,7 +150,9 @@ func (c *Client) do(ctx context.Context, path string, q url.Values, dst any) err
 		return errors.Wrap(err, "do request")
 	}
 
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return errors.New("invalid API key")

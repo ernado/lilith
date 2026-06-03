@@ -31,9 +31,6 @@ const (
 	// maxIterations bounds the tool-call loop.
 	maxIterations = 4
 
-	// minNoteLen is the minimum length of a single-message note worth keeping.
-	minNoteLen = 40
-
 	// maxContextImages is the maximum number of most-recent images attached to
 	// the model context. Older images are replaced with imageTooOldText.
 	maxContextImages = 3

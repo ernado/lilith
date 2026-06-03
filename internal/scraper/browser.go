@@ -100,7 +100,9 @@ func (f *FlareSolverr) Scrape(ctx context.Context, rawURL string) (*lilith.Scrap
 	if err != nil {
 		return nil, errors.Wrap(err, "do request")
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	var fsResp flareSolverrResponse
 	if err := json.NewDecoder(resp.Body).Decode(&fsResp); err != nil {
