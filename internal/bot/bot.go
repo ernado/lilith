@@ -856,6 +856,36 @@ func (a *App) saveSentMessage(ctx context.Context, update tg.UpdatesClass, base 
 		)
 	}
 }
+// currentTimeString renders the current Moscow time as the preformatted string
+// injected into the model prompt.
+func currentTimeString() (string, error) {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return "", errors.Wrap(err, "load location")
+	}
+
+	now := time.Now().In(loc)
+
+	return fmt.Sprintf("Текущее время: %s, %s.",
+		now.Format(time.RFC822Z),
+		russianWeekday(now.Weekday()),
+	), nil
+}
+
+// selfIdentity builds the bot's Self for a chat, including its rank when known.
+func (a *App) selfIdentity(ctx context.Context, chatID int64) lilith.Self {
+	var rank string
+	if selfMember, err := a.getChatMember(ctx, chatID, a.self.ID); err == nil {
+		rank = selfMember.Rank
+	}
+
+	return lilith.Self{
+		Name:     a.self.FirstName,
+		Nickname: a.self.Username,
+		Rank:     rank,
+	}
+}
+
 func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilith.Message) error {
 	lg := zctx.From(ctx).With(zap.Int64("chat_id", chat.ID))
 
@@ -868,16 +898,10 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 		return nil
 	}
 
-	now := time.Now()
-	loc, err := time.LoadLocation("Europe/Moscow")
+	currentTime, err := currentTimeString()
 	if err != nil {
-		return errors.Wrap(err, "load location")
+		return err
 	}
-	now = now.In(loc)
-	currentTime := fmt.Sprintf("Текущее время: %s, %s.",
-		now.Format(time.RFC822Z),
-		russianWeekday(now.Weekday()),
-	)
 
 	notes, err := a.memory.Notes(ctx, chat.ID)
 	if err != nil {
@@ -894,16 +918,7 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 		return errors.Wrap(err, "get last messages")
 	}
 
-	var selfRank string
-	if selfMember, err := a.getChatMember(ctx, chat.ID, a.self.ID); err == nil {
-		selfRank = selfMember.Rank
-	}
-
-	self := lilith.Self{
-		Name:     a.self.FirstName,
-		Nickname: a.self.Username,
-		Rank:     selfRank,
-	}
+	self := a.selfIdentity(ctx, chat.ID)
 
 	var history []lilith.Context
 
@@ -1002,6 +1017,468 @@ func (a *App) deleteChatMessage(ctx context.Context, cc *chatContext, messageID 
 	return err
 }
 
+// persistIncomingMessage resolves the reply target, augments the text with the
+// link-preview content, resolves the logical thread, and persists the message.
+// It returns the saved message and the resolved reply target (its id, and
+// whether it replies to the bot itself).
+func (a *App) persistIncomingMessage(ctx context.Context, cc *chatContext, m *tg.Message, user *tg.User, photoURI string) (lilith.Message, *int64, *bool) {
+	lg := zctx.From(ctx)
+
+	var (
+		replyToID       *int64
+		replyToText     *string
+		replyToMyself   *bool
+		messageThreadID *int64
+		parentMsg       *lilith.Message
+	)
+
+	if replyHeader, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
+		topID, hasTop := replyHeader.GetReplyToTopID()
+
+		// Resolve the Telegram forum topic (distinct from the logical thread).
+		if replyHeader.ForumTopic {
+			if hasTop {
+				messageThreadID = lilith.T(int64(topID))
+			} else {
+				messageThreadID = lilith.T(int64(replyHeader.ReplyToMsgID))
+			}
+		}
+
+		// In a forum topic without an explicit top id, ReplyToMsgID is the topic
+		// root itself, not a genuine reply target.
+		topicRootOnly := replyHeader.ForumTopic && !hasTop
+
+		if replyHeader.ReplyToMsgID != 0 && !topicRootOnly {
+			id := int64(replyHeader.ReplyToMsgID)
+
+			replyToID = &id
+
+			if replyHeader.QuoteText != "" {
+				replyToText = &replyHeader.QuoteText
+			}
+
+			msg, err := a.db.GetMessage(ctx, cc.chatID, id)
+			if err != nil {
+				lg.Warn("Reply-to message not found in db",
+					zap.Int64("chat_id", cc.chatID),
+					zap.Int64("reply_to_msg_id", id),
+					zap.Error(err),
+				)
+			} else {
+				parentMsg = msg
+
+				if msg.IsMyself {
+					replyToMyself = &msg.IsMyself
+				}
+			}
+		}
+	}
+
+	// Augment the message text with the link-preview content so the model can
+	// see what a shared link is about, not just its URL. Skip it when the body
+	// already contains the preview text (e.g. a plain, visible URL).
+	text := m.Message
+	if preview := a.linkPreviewText(ctx, m); preview != "" && !strings.Contains(text, preview) {
+		if text != "" {
+			text += "\n\n"
+		}
+		text += preview
+	}
+
+	savedMsg := lilith.Message{
+		ChatID:          cc.chatID,
+		MessageID:       int64(m.ID),
+		UserID:          user.ID,
+		Date:            time.Unix(int64(m.Date), 0),
+		Text:            text,
+		IsMyself:        m.Out,
+		ImageURL:        photoURI,
+		ReplyToID:       replyToID,
+		ReplyToText:     replyToText,
+		ReplyToMyself:   replyToMyself,
+		MessageThreadID: messageThreadID,
+	}
+
+	// Resolve the logical thread for this message.
+	var lastAuthor *lilith.Message
+	if replyToID == nil {
+		la, err := a.db.GetLastMessageByAuthorInTopic(
+			ctx, cc.chatID, user.ID, messageThreadID, int64(m.ID), thread.MaxInterveningMessages,
+		)
+		if err != nil {
+			lg.Warn("Failed to look up last author message", zap.Error(err))
+		} else {
+			lastAuthor = la
+		}
+	}
+
+	thread.ResolveIncoming(savedMsg, parentMsg, lastAuthor).Apply(&savedMsg)
+
+	if err := a.db.SaveMessage(ctx, savedMsg); err != nil {
+		lg.Error("save message", zap.Error(err))
+	}
+
+	return savedMsg, replyToID, replyToMyself
+}
+
+// handleCommand dispatches the bot's slash commands. It returns handled=true
+// when m was a recognised command (regardless of success), so the caller skips
+// reply generation.
+func (a *App) handleCommand(ctx context.Context, cc *chatContext, m *tg.Message, user *tg.User, reply *message.Builder, replyToID *int64) (bool, error) {
+	lg := zctx.From(ctx).With(zap.Int("msg.id", m.ID))
+
+	hasAdminRights := cc.userIsAdmin || cc.userIsCreator
+	if cc.chatType == lilith.ChatTypePrivate {
+		hasAdminRights = true
+	}
+
+	switch {
+	case m.Message == "/start" || m.Message == "/start@"+a.self.Username:
+		if _, err := reply.Text(ctx, "Привет, "+user.FirstName+"!"); err != nil {
+			return true, errors.Wrap(err, "send message")
+		}
+	case m.Message == "/lobotomy" || m.Message == "/lobotomy@"+a.self.Username:
+		if !hasAdminRights {
+			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		if err := a.db.Lobotomy(ctx, cc.chatID); err != nil {
+			lg.Error("lobotomy failed", zap.Error(err))
+
+			if _, err := reply.Text(ctx, "Ошибка при очистке памяти."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		lg.Info("Lobotomy performed", zap.Int64("chat_id", cc.chatID))
+
+		if _, err := reply.Text(ctx, "Память очищена."); err != nil {
+			return true, errors.Wrap(err, "send message")
+		}
+	case m.Message == "/delete" || m.Message == "/delete@"+a.self.Username:
+		if !hasAdminRights {
+			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		if replyToID == nil {
+			if _, err := reply.Text(ctx, "Ответь этой командой на сообщение, которое нужно удалить из памяти."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		// Fetch the message first so we can clean up its associated image after
+		// the row is gone.
+		deleted, err := a.db.GetMessage(ctx, cc.chatID, *replyToID)
+		if err != nil {
+			lg.Warn("Message to delete not found in db",
+				zap.Int64("message_id", *replyToID),
+				zap.Error(err),
+			)
+		}
+
+		if err := a.db.DeleteMessage(ctx, cc.chatID, *replyToID); err != nil {
+			lg.Error("delete message failed", zap.Error(err), zap.Int64("message_id", *replyToID))
+
+			if _, err := reply.Text(ctx, "Ошибка при удалении сообщения."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		if deleted != nil && deleted.ImageURL != "" && a.files != nil {
+			if err := a.files.Delete(deleted.ImageURL); err != nil {
+				lg.Warn("Failed to delete image file",
+					zap.String("url", deleted.ImageURL),
+					zap.Error(err),
+				)
+			}
+		}
+
+		// Also remove the message from the actual chat. A failure here (e.g. the
+		// bot lacks delete rights) is non-fatal: history is already cleaned.
+		if err := a.deleteChatMessage(ctx, cc, *replyToID); err != nil {
+			lg.Warn("Failed to delete message from chat",
+				zap.Int64("message_id", *replyToID),
+				zap.Error(err),
+			)
+		}
+
+		lg.Info("Deleted message from history",
+			zap.Int64("chat_id", cc.chatID),
+			zap.Int64("message_id", *replyToID),
+		)
+
+		if _, err := reply.Text(ctx, "Сообщение удалено."); err != nil {
+			return true, errors.Wrap(err, "send message")
+		}
+	case m.Message == "/model" || m.Message == "/model@"+a.self.Username:
+		chat, err := a.db.GetChat(ctx, cc.chatID)
+		if err != nil {
+			lg.Error("get chat failed", zap.Error(err))
+
+			if _, err := reply.Text(ctx, "Ошибка при получении данных чата."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		defaultModel := a.ai.DefaultModel()
+		text := "Текущая модель: " + defaultModel + " (по умолчанию)."
+		if chat.Model != "" {
+			text = "Текущая модель: " + chat.Model
+		}
+
+		if _, err := reply.Text(ctx, text); err != nil {
+			return true, errors.Wrap(err, "send message")
+		}
+	case strings.HasPrefix(m.Message, "/model ") || strings.HasPrefix(m.Message, "/model@"+a.self.Username+" "):
+		if !hasAdminRights {
+			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		arg := strings.TrimPrefix(m.Message, "/model@"+a.self.Username+" ")
+		arg = strings.TrimPrefix(arg, "/model ")
+		arg = strings.TrimSpace(arg)
+
+		var newModel string
+		if arg != "reset" {
+			newModel = arg
+		}
+
+		if err := a.db.SetChatModel(ctx, cc.chatID, newModel); err != nil {
+			lg.Error("set chat model failed", zap.Error(err))
+
+			if _, err := reply.Text(ctx, "Ошибка при установке модели."); err != nil {
+				return true, errors.Wrap(err, "send message")
+			}
+
+			return true, nil
+		}
+
+		lg.Info("Chat model updated", zap.Int64("chat_id", cc.chatID), zap.String("model", newModel))
+
+		text := "Модель сброшена до умолчания."
+		if newModel != "" {
+			text = "Модель установлена: " + newModel
+		}
+
+		if _, err := reply.Text(ctx, text); err != nil {
+			return true, errors.Wrap(err, "send message")
+		}
+	default:
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// respondToMessage decides whether to reply to a non-command message and, when
+// it should, builds the model request, applies any reactions, and sends and
+// persists the reply. It folds the message into the chat notes regardless.
+func (a *App) respondToMessage(
+	ctx context.Context,
+	cc *chatContext,
+	m *tg.Message,
+	user *tg.User,
+	savedMsg lilith.Message,
+	replyToMyself *bool,
+	userMeta *lilith.UserMetadata,
+	photoURI string,
+	reply *message.Builder,
+	answer *message.RequestBuilder,
+	action *message.TypingActionBuilder,
+) error {
+	lg := zctx.From(ctx).With(zap.Int("msg.id", m.ID))
+
+	var shouldResponse bool
+
+	if cc.chatType == lilith.ChatTypePrivate {
+		shouldResponse = true
+	}
+
+	if replyToMyself != nil && *replyToMyself {
+		shouldResponse = true
+	}
+
+	for _, name := range []string{
+		"лилит",
+		"лиля",
+		"лилия",
+		a.self.Username,
+	} {
+		if strings.Contains(strings.ToLower(m.Message), name) {
+			shouldResponse = true
+		}
+	}
+
+	if !shouldResponse && rand.Float64() < implicitResponseProbability {
+		lg.Info("Random implicit response triggered")
+		shouldResponse = true
+	}
+
+	a.maintainNotes(ctx, cc.chatID, savedMsg)
+
+	if !shouldResponse {
+		lg.Info("Ignoring message")
+		return nil
+	}
+
+	currentTime, err := currentTimeString()
+	if err != nil {
+		return err
+	}
+
+	notes, err := a.memory.Notes(ctx, cc.chatID)
+	if err != nil {
+		return errors.Wrap(err, "get chat notes")
+	}
+
+	members, err := a.db.GetChatMembers(ctx, cc.chatID)
+	if err != nil {
+		return errors.Wrap(err, "get chat members")
+	}
+
+	lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, chatContextWindowMessages, int64(m.ID))
+	if err != nil {
+		return errors.Wrap(err, "get last messages")
+	}
+
+	self := a.selfIdentity(ctx, cc.chatID)
+
+	var history []lilith.Context
+	candidates := thread.SelectHistoryCandidates(lastMessages, int64(m.ID), chatContextWindowMessages)
+	for _, msg := range candidates {
+		if msg.MessageID == savedMsg.MessageID {
+			continue
+		}
+
+		member, err := a.getChatMember(ctx, msg.ChatID, msg.UserID)
+		if err != nil {
+			// Author isn't a known member (e.g. a bot or a user who left).
+			// Keep the message in context with a minimal member rather than
+			// dropping it from history entirely.
+			lg.Warn("Member not found for history message, using fallback",
+				zap.Error(err),
+				zap.Int64("user_id", msg.UserID),
+			)
+			member = &lilith.ChatMember{ChatID: msg.ChatID, UserID: msg.UserID}
+		}
+
+		dialogContext := lilith.Context{
+			Message: &msg,
+			User:    member,
+		}
+
+		if member.UserID == user.ID {
+			dialogContext.UserMetadata = userMeta
+		}
+
+		history = append(history, dialogContext)
+	}
+
+	currentMember, err := a.getChatMember(ctx, savedMsg.ChatID, savedMsg.UserID)
+	if err != nil {
+		lg.Warn("Failed to get current member, using user entity as fallback", zap.Error(err))
+		currentMember = &lilith.ChatMember{
+			ChatID:    cc.chatID,
+			UserID:    user.ID,
+			Username:  user.Username,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+		}
+	}
+
+	chat, err := a.db.GetChat(ctx, cc.chatID)
+	if err != nil {
+		return errors.Wrap(err, "get chat")
+	}
+
+	req := lilith.ResponseRequest{
+		Model:           chat.Model,
+		CharacterPrompt: chat.CharacterPrompt,
+		CurrentTime:     currentTime,
+		Notes:           notes,
+		Members:         members,
+		Self:            self,
+		History:         history,
+		Current: lilith.Context{
+			Message:      &savedMsg,
+			User:         currentMember,
+			UserMetadata: userMeta,
+		},
+		ImageURL: photoURI,
+		Typing: func(ctx context.Context) error {
+			return action.Typing(ctx)
+		},
+	}
+
+	result, err := a.ai.Respond(ctx, req)
+	if err != nil {
+		return errors.Wrap(err, "respond")
+	}
+
+	for _, r := range result.Reactions {
+		lg.Info("Setting reaction to message")
+		if _, err := answer.Reaction(ctx, m.ID, &tg.ReactionEmoji{Emoticon: r}); err != nil {
+			lg.Warn("Failed to set reaction", zap.Error(err))
+		}
+	}
+
+	if strings.TrimSpace(result.Text) == "" {
+		lg.Warn("Empty response from AI")
+		return nil
+	}
+
+	styledOptions := markdown.String(func(id int64) (tg.InputUserClass, error) {
+		return &tg.InputUser{UserID: id}, nil
+	}, result.Text)
+
+	// In one-to-one chats there is no need to thread responses as replies;
+	// send directly to the chat instead.
+	sentMsg := lilith.Message{
+		ChatID:          cc.chatID,
+		UserID:          a.self.ID,
+		Text:            result.Text,
+		ReplyToID:       lilith.T(int64(m.ID)),
+		IsMyself:        true,
+		MessageThreadID: savedMsg.MessageThreadID,
+	}
+
+	send := reply.StyledText
+	if cc.chatType == lilith.ChatTypePrivate {
+		send = answer.StyledText
+		sentMsg.ReplyToID = nil
+	}
+
+	sentUpdate, err := send(ctx, styledOptions)
+	if err != nil {
+		lg.Warn("Failed to send response", zap.Error(err))
+		return errors.Wrap(err, "send response")
+	}
+
+	a.saveSentMessage(ctx, sentUpdate, sentMsg, &savedMsg)
+
+	return nil
+}
+
 func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -1080,99 +1557,7 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		return errors.Wrap(err, "upsert chat member")
 	}
 
-	var (
-		replyToID       *int64
-		replyToText     *string
-		replyToMyself   *bool
-		messageThreadID *int64
-		parentMsg       *lilith.Message
-	)
-
-	if replyHeader, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
-		topID, hasTop := replyHeader.GetReplyToTopID()
-
-		// Resolve the Telegram forum topic (distinct from the logical thread).
-		if replyHeader.ForumTopic {
-			if hasTop {
-				messageThreadID = lilith.T(int64(topID))
-			} else {
-				messageThreadID = lilith.T(int64(replyHeader.ReplyToMsgID))
-			}
-		}
-
-		// In a forum topic without an explicit top id, ReplyToMsgID is the topic
-		// root itself, not a genuine reply target.
-		topicRootOnly := replyHeader.ForumTopic && !hasTop
-
-		if replyHeader.ReplyToMsgID != 0 && !topicRootOnly {
-			id := int64(replyHeader.ReplyToMsgID)
-
-			replyToID = &id
-
-			if replyHeader.QuoteText != "" {
-				replyToText = &replyHeader.QuoteText
-			}
-
-			msg, err := a.db.GetMessage(ctx, cc.chatID, id)
-			if err != nil {
-				zctx.From(ctx).Warn("Reply-to message not found in db",
-					zap.Int64("chat_id", cc.chatID),
-					zap.Int64("reply_to_msg_id", id),
-					zap.Error(err),
-				)
-			} else {
-				parentMsg = msg
-
-				if msg.IsMyself {
-					replyToMyself = &msg.IsMyself
-				}
-			}
-		}
-	}
-
-	// Augment the message text with the link-preview content so the model can
-	// see what a shared link is about, not just its URL. Skip it when the body
-	// already contains the preview text (e.g. a plain, visible URL).
-	text := m.Message
-	if preview := a.linkPreviewText(ctx, m); preview != "" && !strings.Contains(text, preview) {
-		if text != "" {
-			text += "\n\n"
-		}
-		text += preview
-	}
-
-	savedMsg := lilith.Message{
-		ChatID:          cc.chatID,
-		MessageID:       int64(m.ID),
-		UserID:          user.ID,
-		Date:            time.Unix(int64(m.Date), 0),
-		Text:            text,
-		IsMyself:        m.Out,
-		ImageURL:        photoURI,
-		ReplyToID:       replyToID,
-		ReplyToText:     replyToText,
-		ReplyToMyself:   replyToMyself,
-		MessageThreadID: messageThreadID,
-	}
-
-	// Resolve the logical thread for this message.
-	var lastAuthor *lilith.Message
-	if replyToID == nil {
-		la, err := a.db.GetLastMessageByAuthorInTopic(
-			ctx, cc.chatID, user.ID, messageThreadID, int64(m.ID), thread.MaxInterveningMessages,
-		)
-		if err != nil {
-			lg.Warn("Failed to look up last author message", zap.Error(err))
-		} else {
-			lastAuthor = la
-		}
-	}
-
-	thread.ResolveIncoming(savedMsg, parentMsg, lastAuthor).Apply(&savedMsg)
-
-	if err := a.db.SaveMessage(ctx, savedMsg); err != nil {
-		lg.Error("save message", zap.Error(err))
-	}
+	savedMsg, replyToID, replyToMyself := a.persistIncomingMessage(ctx, cc, m, user, photoURI)
 
 	if m.Out {
 		return nil
@@ -1185,353 +1570,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		return nil
 	}
 
-	hasAdminRights := cc.userIsAdmin || cc.userIsCreator
-	if cc.chatType == lilith.ChatTypePrivate {
-		hasAdminRights = true
+	if handled, err := a.handleCommand(ctx, cc, m, user, reply, replyToID); err != nil {
+		return err
+	} else if handled {
+		return nil
 	}
 
-	switch {
-	case m.Message == "/start" || m.Message == "/start@"+a.self.Username:
-		if _, err := reply.Text(ctx, "Привет, "+user.FirstName+"!"); err != nil {
-			return errors.Wrap(err, "send message")
-		}
-	case m.Message == "/lobotomy" || m.Message == "/lobotomy@"+a.self.Username:
-		if !hasAdminRights {
-			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		if err := a.db.Lobotomy(ctx, cc.chatID); err != nil {
-			lg.Error("lobotomy failed", zap.Error(err))
-
-			if _, err := reply.Text(ctx, "Ошибка при очистке памяти."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		lg.Info("Lobotomy performed", zap.Int64("chat_id", cc.chatID))
-
-		if _, err := reply.Text(ctx, "Память очищена."); err != nil {
-			return errors.Wrap(err, "send message")
-		}
-	case m.Message == "/delete" || m.Message == "/delete@"+a.self.Username:
-		if !hasAdminRights {
-			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		if replyToID == nil {
-			if _, err := reply.Text(ctx, "Ответь этой командой на сообщение, которое нужно удалить из памяти."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		// Fetch the message first so we can clean up its associated image after
-		// the row is gone.
-		deleted, err := a.db.GetMessage(ctx, cc.chatID, *replyToID)
-		if err != nil {
-			lg.Warn("Message to delete not found in db",
-				zap.Int64("message_id", *replyToID),
-				zap.Error(err),
-			)
-		}
-
-		if err := a.db.DeleteMessage(ctx, cc.chatID, *replyToID); err != nil {
-			lg.Error("delete message failed", zap.Error(err), zap.Int64("message_id", *replyToID))
-
-			if _, err := reply.Text(ctx, "Ошибка при удалении сообщения."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		if deleted != nil && deleted.ImageURL != "" && a.files != nil {
-			if err := a.files.Delete(deleted.ImageURL); err != nil {
-				lg.Warn("Failed to delete image file",
-					zap.String("url", deleted.ImageURL),
-					zap.Error(err),
-				)
-			}
-		}
-
-		// Also remove the message from the actual chat. A failure here (e.g. the
-		// bot lacks delete rights) is non-fatal: history is already cleaned.
-		if err := a.deleteChatMessage(ctx, cc, *replyToID); err != nil {
-			lg.Warn("Failed to delete message from chat",
-				zap.Int64("message_id", *replyToID),
-				zap.Error(err),
-			)
-		}
-
-		lg.Info("Deleted message from history",
-			zap.Int64("chat_id", cc.chatID),
-			zap.Int64("message_id", *replyToID),
-		)
-
-		if _, err := reply.Text(ctx, "Сообщение удалено."); err != nil {
-			return errors.Wrap(err, "send message")
-		}
-	case m.Message == "/model" || m.Message == "/model@"+a.self.Username:
-		chat, err := a.db.GetChat(ctx, cc.chatID)
-		if err != nil {
-			lg.Error("get chat failed", zap.Error(err))
-
-			if _, err := reply.Text(ctx, "Ошибка при получении данных чата."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		defaultModel := a.ai.DefaultModel()
-		text := "Текущая модель: " + defaultModel + " (по умолчанию)."
-		if chat.Model != "" {
-			text = "Текущая модель: " + chat.Model
-		}
-
-		if _, err := reply.Text(ctx, text); err != nil {
-			return errors.Wrap(err, "send message")
-		}
-	case strings.HasPrefix(m.Message, "/model ") || strings.HasPrefix(m.Message, "/model@"+a.self.Username+" "):
-		if !hasAdminRights {
-			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		arg := strings.TrimPrefix(m.Message, "/model@"+a.self.Username+" ")
-		arg = strings.TrimPrefix(arg, "/model ")
-		arg = strings.TrimSpace(arg)
-
-		var newModel string
-		if arg != "reset" {
-			newModel = arg
-		}
-
-		if err := a.db.SetChatModel(ctx, cc.chatID, newModel); err != nil {
-			lg.Error("set chat model failed", zap.Error(err))
-
-			if _, err := reply.Text(ctx, "Ошибка при установке модели."); err != nil {
-				return errors.Wrap(err, "send message")
-			}
-
-			return nil
-		}
-
-		lg.Info("Chat model updated", zap.Int64("chat_id", cc.chatID), zap.String("model", newModel))
-
-		text := "Модель сброшена до умолчания."
-		if newModel != "" {
-			text = "Модель установлена: " + newModel
-		}
-
-		if _, err := reply.Text(ctx, text); err != nil {
-			return errors.Wrap(err, "send message")
-		}
-	default:
-		var shouldResponse bool
-
-		if cc.chatType == lilith.ChatTypePrivate {
-			shouldResponse = true
-		}
-
-		if replyToMyself != nil && *replyToMyself {
-			shouldResponse = true
-		}
-
-		for _, name := range []string{
-			"лилит",
-			"лиля",
-			"лилия",
-			a.self.Username,
-		} {
-			if strings.Contains(strings.ToLower(m.Message), name) {
-				shouldResponse = true
-			}
-		}
-
-		if !shouldResponse && rand.Float64() < implicitResponseProbability {
-			lg.Info("Random implicit response triggered")
-			shouldResponse = true
-		}
-
-		a.maintainNotes(ctx, cc.chatID, savedMsg)
-
-		if !shouldResponse {
-			lg.Info("Ignoring message")
-			return nil
-		}
-
-		now := time.Now()
-		loc, err := time.LoadLocation("Europe/Moscow")
-		if err != nil {
-			return errors.Wrap(err, "load location")
-		}
-		now = now.In(loc)
-		currentTime := fmt.Sprintf("Текущее время: %s, %s.",
-			now.Format(time.RFC822Z),
-			russianWeekday(now.Weekday()),
-		)
-
-		notes, err := a.memory.Notes(ctx, cc.chatID)
-		if err != nil {
-			return errors.Wrap(err, "get chat notes")
-		}
-
-		members, err := a.db.GetChatMembers(ctx, cc.chatID)
-		if err != nil {
-			return errors.Wrap(err, "get chat members")
-		}
-
-		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, chatContextWindowMessages, int64(m.ID))
-		if err != nil {
-			return errors.Wrap(err, "get last messages")
-		}
-
-		selfMember, err := a.getChatMember(ctx, cc.chatID, a.self.ID)
-		if err != nil {
-			lg.Warn("Failed to get self chat member", zap.Error(err))
-		}
-
-		var selfRank string
-		if selfMember != nil {
-			selfRank = selfMember.Rank
-		}
-
-		self := lilith.Self{
-			Name:     a.self.FirstName,
-			Nickname: a.self.Username,
-			Rank:     selfRank,
-		}
-
-		var history []lilith.Context
-		candidates := thread.SelectHistoryCandidates(lastMessages, int64(m.ID), chatContextWindowMessages)
-		for _, msg := range candidates {
-			if msg.MessageID == savedMsg.MessageID {
-				continue
-			}
-
-			member, err := a.getChatMember(ctx, msg.ChatID, msg.UserID)
-			if err != nil {
-				// Author isn't a known member (e.g. a bot or a user who left).
-				// Keep the message in context with a minimal member rather than
-				// dropping it from history entirely.
-				lg.Warn("Member not found for history message, using fallback",
-					zap.Error(err),
-					zap.Int64("user_id", msg.UserID),
-				)
-				member = &lilith.ChatMember{ChatID: msg.ChatID, UserID: msg.UserID}
-			}
-
-			dialogContext := lilith.Context{
-				Message: &msg,
-				User:    member,
-			}
-
-			if member.UserID == user.ID {
-				dialogContext.UserMetadata = userMeta
-			}
-
-			history = append(history, dialogContext)
-		}
-
-		currentMember, err := a.getChatMember(ctx, savedMsg.ChatID, savedMsg.UserID)
-		if err != nil {
-			lg.Warn("Failed to get current member, using user entity as fallback", zap.Error(err))
-			currentMember = &lilith.ChatMember{
-				ChatID:    cc.chatID,
-				UserID:    user.ID,
-				Username:  user.Username,
-				FirstName: user.FirstName,
-				LastName:  user.LastName,
-			}
-		}
-
-		chat, err := a.db.GetChat(ctx, cc.chatID)
-		if err != nil {
-			return errors.Wrap(err, "get chat")
-		}
-
-		req := lilith.ResponseRequest{
-			Model:           chat.Model,
-			CharacterPrompt: chat.CharacterPrompt,
-			CurrentTime:     currentTime,
-			Notes:           notes,
-			Members:         members,
-			Self:            self,
-			History:         history,
-			Current: lilith.Context{
-				Message:      &savedMsg,
-				User:         currentMember,
-				UserMetadata: userMeta,
-			},
-			ImageURL: photoURI,
-			Typing: func(ctx context.Context) error {
-				return action.Typing(ctx)
-			},
-		}
-
-		result, err := a.ai.Respond(ctx, req)
-		if err != nil {
-			return errors.Wrap(err, "respond")
-		}
-
-		for _, r := range result.Reactions {
-			lg.Info("Setting reaction to message")
-			if _, err := answer.Reaction(ctx, m.ID, &tg.ReactionEmoji{Emoticon: r}); err != nil {
-				lg.Warn("Failed to set reaction", zap.Error(err))
-			}
-		}
-
-		if strings.TrimSpace(result.Text) == "" {
-			lg.Warn("Empty response from AI")
-			return nil
-		}
-
-		styledOptions := markdown.String(func(id int64) (tg.InputUserClass, error) {
-			return &tg.InputUser{UserID: id}, nil
-		}, result.Text)
-
-		// In one-to-one chats there is no need to thread responses as replies;
-		// send directly to the chat instead.
-		sentMsg := lilith.Message{
-			ChatID:          cc.chatID,
-			UserID:          a.self.ID,
-			Text:            result.Text,
-			ReplyToID:       lilith.T(int64(m.ID)),
-			IsMyself:        true,
-			MessageThreadID: savedMsg.MessageThreadID,
-		}
-
-		send := reply.StyledText
-		if cc.chatType == lilith.ChatTypePrivate {
-			send = answer.StyledText
-			sentMsg.ReplyToID = nil
-		}
-
-		sentUpdate, err := send(ctx, styledOptions)
-		if err != nil {
-			lg.Warn("Failed to send response", zap.Error(err))
-			return errors.Wrap(err, "send response")
-		}
-
-		a.saveSentMessage(ctx, sentUpdate, sentMsg, &savedMsg)
-	}
-
-	return nil
+	return a.respondToMessage(ctx, cc, m, user, savedMsg, replyToMyself, userMeta, photoURI, reply, answer, action)
 }
 
 func (a *App) fetchChannelParticipants(ctx context.Context, channel *tg.Channel) error {
