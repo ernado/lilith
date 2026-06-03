@@ -1290,31 +1290,33 @@ func (a *App) handleCommand(ctx context.Context, cc *chatContext, m *tg.Message,
 	return true, nil
 }
 
+// respondParams bundles the per-message inputs for respondToMessage.
+type respondParams struct {
+	cc            *chatContext
+	m             *tg.Message
+	user          *tg.User
+	savedMsg      lilith.Message
+	replyToMyself *bool
+	userMeta      *lilith.UserMetadata
+	photoURI      string
+	reply         *message.Builder
+	answer        *message.RequestBuilder
+	action        *message.TypingActionBuilder
+}
+
 // respondToMessage decides whether to reply to a non-command message and, when
 // it should, builds the model request, applies any reactions, and sends and
 // persists the reply. It folds the message into the chat notes regardless.
-func (a *App) respondToMessage(
-	ctx context.Context,
-	cc *chatContext,
-	m *tg.Message,
-	user *tg.User,
-	savedMsg lilith.Message,
-	replyToMyself *bool,
-	userMeta *lilith.UserMetadata,
-	photoURI string,
-	reply *message.Builder,
-	answer *message.RequestBuilder,
-	action *message.TypingActionBuilder,
-) error {
-	lg := zctx.From(ctx).With(zap.Int("msg.id", m.ID))
+func (a *App) respondToMessage(ctx context.Context, p respondParams) error {
+	lg := zctx.From(ctx).With(zap.Int("msg.id", p.m.ID))
 
 	var shouldResponse bool
 
-	if cc.chatType == lilith.ChatTypePrivate {
+	if p.cc.chatType == lilith.ChatTypePrivate {
 		shouldResponse = true
 	}
 
-	if replyToMyself != nil && *replyToMyself {
+	if p.replyToMyself != nil && *p.replyToMyself {
 		shouldResponse = true
 	}
 
@@ -1324,7 +1326,7 @@ func (a *App) respondToMessage(
 		"лилия",
 		a.self.Username,
 	} {
-		if strings.Contains(strings.ToLower(m.Message), name) {
+		if strings.Contains(strings.ToLower(p.m.Message), name) {
 			shouldResponse = true
 		}
 	}
@@ -1334,7 +1336,7 @@ func (a *App) respondToMessage(
 		shouldResponse = true
 	}
 
-	a.maintainNotes(ctx, cc.chatID, savedMsg)
+	a.maintainNotes(ctx, p.cc.chatID, p.savedMsg)
 
 	if !shouldResponse {
 		lg.Info("Ignoring message")
@@ -1346,27 +1348,27 @@ func (a *App) respondToMessage(
 		return err
 	}
 
-	notes, err := a.memory.Notes(ctx, cc.chatID)
+	notes, err := a.memory.Notes(ctx, p.cc.chatID)
 	if err != nil {
 		return errors.Wrap(err, "get chat notes")
 	}
 
-	members, err := a.db.GetChatMembers(ctx, cc.chatID)
+	members, err := a.db.GetChatMembers(ctx, p.cc.chatID)
 	if err != nil {
 		return errors.Wrap(err, "get chat members")
 	}
 
-	lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, chatContextWindowMessages, int64(m.ID))
+	lastMessages, err := a.db.GetLastMessages(ctx, p.cc.chatID, chatContextWindowMessages, int64(p.m.ID))
 	if err != nil {
 		return errors.Wrap(err, "get last messages")
 	}
 
-	self := a.selfIdentity(ctx, cc.chatID)
+	self := a.selfIdentity(ctx, p.cc.chatID)
 
 	var history []lilith.Context
-	candidates := thread.SelectHistoryCandidates(lastMessages, int64(m.ID), chatContextWindowMessages)
+	candidates := thread.SelectHistoryCandidates(lastMessages, int64(p.m.ID), chatContextWindowMessages)
 	for _, msg := range candidates {
-		if msg.MessageID == savedMsg.MessageID {
+		if msg.MessageID == p.savedMsg.MessageID {
 			continue
 		}
 
@@ -1387,26 +1389,26 @@ func (a *App) respondToMessage(
 			User:    member,
 		}
 
-		if member.UserID == user.ID {
-			dialogContext.UserMetadata = userMeta
+		if member.UserID == p.user.ID {
+			dialogContext.UserMetadata = p.userMeta
 		}
 
 		history = append(history, dialogContext)
 	}
 
-	currentMember, err := a.getChatMember(ctx, savedMsg.ChatID, savedMsg.UserID)
+	currentMember, err := a.getChatMember(ctx, p.savedMsg.ChatID, p.savedMsg.UserID)
 	if err != nil {
 		lg.Warn("Failed to get current member, using user entity as fallback", zap.Error(err))
 		currentMember = &lilith.ChatMember{
-			ChatID:    cc.chatID,
-			UserID:    user.ID,
-			Username:  user.Username,
-			FirstName: user.FirstName,
-			LastName:  user.LastName,
+			ChatID:    p.cc.chatID,
+			UserID:    p.user.ID,
+			Username:  p.user.Username,
+			FirstName: p.user.FirstName,
+			LastName:  p.user.LastName,
 		}
 	}
 
-	chat, err := a.db.GetChat(ctx, cc.chatID)
+	chat, err := a.db.GetChat(ctx, p.cc.chatID)
 	if err != nil {
 		return errors.Wrap(err, "get chat")
 	}
@@ -1420,13 +1422,13 @@ func (a *App) respondToMessage(
 		Self:            self,
 		History:         history,
 		Current: lilith.Context{
-			Message:      &savedMsg,
+			Message:      &p.savedMsg,
 			User:         currentMember,
-			UserMetadata: userMeta,
+			UserMetadata: p.userMeta,
 		},
-		ImageURL: photoURI,
+		ImageURL: p.photoURI,
 		Typing: func(ctx context.Context) error {
-			return action.Typing(ctx)
+			return p.action.Typing(ctx)
 		},
 	}
 
@@ -1437,7 +1439,7 @@ func (a *App) respondToMessage(
 
 	for _, r := range result.Reactions {
 		lg.Info("Setting reaction to message")
-		if _, err := answer.Reaction(ctx, m.ID, &tg.ReactionEmoji{Emoticon: r}); err != nil {
+		if _, err := p.answer.Reaction(ctx, p.m.ID, &tg.ReactionEmoji{Emoticon: r}); err != nil {
 			lg.Warn("Failed to set reaction", zap.Error(err))
 		}
 	}
@@ -1454,17 +1456,17 @@ func (a *App) respondToMessage(
 	// In one-to-one chats there is no need to thread responses as replies;
 	// send directly to the chat instead.
 	sentMsg := lilith.Message{
-		ChatID:          cc.chatID,
+		ChatID:          p.cc.chatID,
 		UserID:          a.self.ID,
 		Text:            result.Text,
-		ReplyToID:       lilith.T(int64(m.ID)),
+		ReplyToID:       lilith.T(int64(p.m.ID)),
 		IsMyself:        true,
-		MessageThreadID: savedMsg.MessageThreadID,
+		MessageThreadID: p.savedMsg.MessageThreadID,
 	}
 
-	send := reply.StyledText
-	if cc.chatType == lilith.ChatTypePrivate {
-		send = answer.StyledText
+	send := p.reply.StyledText
+	if p.cc.chatType == lilith.ChatTypePrivate {
+		send = p.answer.StyledText
 		sentMsg.ReplyToID = nil
 	}
 
@@ -1474,7 +1476,7 @@ func (a *App) respondToMessage(
 		return errors.Wrap(err, "send response")
 	}
 
-	a.saveSentMessage(ctx, sentUpdate, sentMsg, &savedMsg)
+	a.saveSentMessage(ctx, sentUpdate, sentMsg, &p.savedMsg)
 
 	return nil
 }
@@ -1576,7 +1578,18 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		return nil
 	}
 
-	return a.respondToMessage(ctx, cc, m, user, savedMsg, replyToMyself, userMeta, photoURI, reply, answer, action)
+	return a.respondToMessage(ctx, respondParams{
+		cc:            cc,
+		m:             m,
+		user:          user,
+		savedMsg:      savedMsg,
+		replyToMyself: replyToMyself,
+		userMeta:      userMeta,
+		photoURI:      photoURI,
+		reply:         reply,
+		answer:        answer,
+		action:        action,
+	})
 }
 
 func (a *App) fetchChannelParticipants(ctx context.Context, channel *tg.Channel) error {
