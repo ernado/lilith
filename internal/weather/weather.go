@@ -14,14 +14,9 @@ const defaultBase = "http://api.weatherstack.com"
 
 var _ lilith.WeatherProvider = (*Client)(nil)
 
-// HTTPClient is the interface satisfied by *http.Client.
-type HTTPClient interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 // Client is a Weatherstack API client.
 type Client struct {
-	http HTTPClient
+	http lilith.HTTPClient
 	key  string
 	base string
 }
@@ -29,7 +24,7 @@ type Client struct {
 // Options configures Client construction.
 type Options struct {
 	// HTTP overrides the HTTP client. Defaults to http.DefaultClient.
-	HTTP HTTPClient
+	HTTP lilith.HTTPClient
 }
 
 func (o *Options) setDefaults() {
