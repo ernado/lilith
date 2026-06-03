@@ -43,14 +43,14 @@ var _ lilith.AI = (*Client)(nil)
 
 // Client is the OpenRouter-backed implementation of lilith.AI.
 type Client struct {
-	ai      *openrouter.Client
+	ai      ChatCompleter
 	model   string
 	weather lilith.WeatherProvider
 }
 
-// New returns a Client using the given OpenRouter client, model and weather
+// New returns a Client using the given chat completer, model and weather
 // provider (used for the weather tool).
-func New(ai *openrouter.Client, model string, weather lilith.WeatherProvider) *Client {
+func New(ai ChatCompleter, model string, weather lilith.WeatherProvider) *Client {
 	return &Client{
 		ai:      ai,
 		model:   model,
