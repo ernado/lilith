@@ -109,20 +109,28 @@ func (m *Memory) doGenerateNotes(ctx context.Context, chatID, currentMsgID int64
 		return errors.Wrap(err, "generate notes")
 	}
 
-	if text == "" {
-		lg.Info("No new notes generated")
-		return nil
-	}
-
-	if _, err := m.db.AddChatNote(ctx, chatID, text); err != nil {
-		return errors.Wrap(err, "add chat note")
-	}
-
+	// Advance the watermark regardless of the outcome. An empty result is the
+	// "nothing to change" case; without advancing we would re-summarize the
+	// same window on every subsequent message.
 	if _, err := m.db.SetLastNotesMsgID(ctx, chatID, currentMsgID); err != nil {
 		return errors.Wrap(err, "set last notes msg id")
 	}
 
-	lg.Info("Notes generated",
+	// Empty means the model found nothing to update; keep the existing memory
+	// rather than overwriting it with a blank note.
+	if text == "" {
+		lg.Info("No notes update")
+		return nil
+	}
+
+	// Replace the whole memory: GenerateNotes returns the full updated document
+	// (existing facts retained and compacted, new facts integrated), so a single
+	// evolving note is kept rather than an append-only log.
+	if _, err := m.db.ReplaceChatNotes(ctx, chatID, text); err != nil {
+		return errors.Wrap(err, "replace chat notes")
+	}
+
+	lg.Info("Notes updated",
 		zap.Int64("msg_id", currentMsgID),
 		zap.String("text", text),
 	)
