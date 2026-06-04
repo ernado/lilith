@@ -128,6 +128,54 @@ func TestRespond_EmojiToolResultCarriesEmoji(t *testing.T) {
 	)
 }
 
+// Each tool result fed back to the model must be preceded by an assistant
+// message that carries the matching tool_calls entry, as the tool protocol
+// requires. This pins the fix for the missing assistant tool_calls message.
+func TestRespond_ToolResultPrecededByAssistantToolCall(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			calls++
+			if calls == 1 {
+				return toolCallResponse("call_1", "reply_emoji", `{"emoji":"👍"}`), nil
+			}
+
+			return textResponse("ок"), nil
+		},
+	}
+
+	_, err := newClient(completer).Respond(context.Background(), basicRequest())
+	require.NoError(t, err)
+
+	messages := completer.CreateChatCompletionCalls()[1].Request.Messages
+
+	// Find the tool result and assert an assistant message announcing the same
+	// tool call id comes before it.
+	toolIndex := -1
+	for i, m := range messages {
+		if m.Role == openrouter.ChatMessageRoleTool && m.ToolCallID == "call_1" {
+			toolIndex = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, toolIndex, "tool result message must be present")
+
+	var announced bool
+	for _, m := range messages[:toolIndex] {
+		if m.Role != openrouter.ChatMessageRoleAssistant {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "call_1" {
+				announced = true
+			}
+		}
+	}
+	require.True(t, announced, "tool result must be preceded by an assistant message carrying its tool_calls entry")
+}
+
 func TestRespond_WeatherTool(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/bwmarrin/discordgo"
@@ -106,6 +107,47 @@ func (c *Client) PopulatedChannels(context.Context) ([]lilith.DiscordChannel, er
 	})
 
 	return channels, nil
+}
+
+// Stats is a diagnostic snapshot of the cached gateway state.
+type Stats struct {
+	// Guilds is the number of guilds the bot is currently in.
+	Guilds int
+	// VoiceStates is the total number of users in voice across all guilds.
+	VoiceStates int
+}
+
+// Stats returns a diagnostic snapshot of the cached gateway state. It is useful
+// to tell apart "bot is in no guild", "guild present but nobody in voice" and a
+// healthy populated state.
+func (c *Client) Stats() Stats {
+	st := c.session.State
+
+	st.RLock()
+	defer st.RUnlock()
+
+	s := Stats{Guilds: len(st.Guilds)}
+	for _, g := range st.Guilds {
+		s.VoiceStates += len(g.VoiceStates)
+	}
+
+	return s
+}
+
+// Self returns the bot's own identity ("username (id)") once the gateway READY
+// has been received, reporting false until then. It confirms which bot
+// application a token belongs to.
+func (c *Client) Self() (string, bool) {
+	st := c.session.State
+
+	st.RLock()
+	defer st.RUnlock()
+
+	if st.User == nil {
+		return "", false
+	}
+
+	return fmt.Sprintf("%s (%s)", st.User.Username, st.User.ID), true
 }
 
 // resolveMember turns a voice state into a domain member, preferring the cached

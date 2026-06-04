@@ -314,6 +314,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			}()
 		}
 
+		start := time.Now()
 		resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 			Model:       model,
 			Messages:    dialog,
@@ -328,6 +329,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			return nil, errors.Wrap(err, "generate content")
 		}
 
+		latency := time.Since(start)
 		if u := resp.Usage; u != nil {
 			lg.Info("Token usage",
 				zap.Int("prompt_tokens", u.PromptTokens),
@@ -335,6 +337,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				zap.Int("total_tokens", u.TotalTokens),
 				zap.String("model", resp.Model),
 				zap.String("tier", string(resp.ServiceTier)),
+				zap.Duration("latency", latency),
 			)
 		}
 
@@ -343,6 +346,14 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		}
 
 		msg := resp.Choices[0].Message
+
+		// The tool protocol requires the assistant message carrying the
+		// tool_calls to precede the tool result messages. Echo it once before
+		// processing the individual calls below.
+		if len(msg.ToolCalls) > 0 {
+			msg.Role = openrouter.ChatMessageRoleAssistant
+			dialog = append(dialog, msg)
+		}
 
 		for _, tool := range msg.ToolCalls {
 			lg.Info("Function call", zap.String("id", tool.ID))
@@ -364,22 +375,12 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				if err != nil {
 					return nil, errors.Wrap(err, "marshal emoji")
 				}
-				assistantContent, err := json.Marshal(tool)
-				if err != nil {
-					return nil, errors.Wrap(err, "marshal tool")
-				}
 
-				dialog = append(dialog,
-					openrouter.ChatCompletionMessage{
-						Role:    openrouter.ChatMessageRoleAssistant,
-						Content: openrouter.Content{Text: string(assistantContent)},
-					},
-					openrouter.ChatCompletionMessage{
-						Role:       openrouter.ChatMessageRoleTool,
-						Content:    openrouter.Content{Text: string(toolContent)},
-						ToolCallID: tool.ID,
-					},
-				)
+				dialog = append(dialog, openrouter.ChatCompletionMessage{
+					Role:       openrouter.ChatMessageRoleTool,
+					Content:    openrouter.Content{Text: string(toolContent)},
+					ToolCallID: tool.ID,
+				})
 
 				if text, ok := reaction.Canonicalize(args.Emoji); ok {
 					result.Reactions = append(result.Reactions, text)
