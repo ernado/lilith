@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/XSAM/otelsql v0.42.0
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/go-faster/errors v0.7.1
 	github.com/go-faster/sdk v0.34.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -53,6 +54,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
+	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/gotd/ige v0.2.2 // indirect
 	github.com/gotd/neo v0.1.5 // indirect
 	github.com/grafana/otel-profiling-go v0.5.1 // indirect

@@ -42,7 +42,7 @@ func toolCallResponse(id, name, args string) openrouter.ChatCompletionResponse {
 }
 
 func newClient(completer ai.ChatCompleter) *ai.Client {
-	return ai.New(completer, "test-model", &mock.WeatherProviderMock{})
+	return ai.New(completer, "test-model", &mock.WeatherProviderMock{}, &mock.DiscordProviderMock{})
 }
 
 func basicRequest() lilith.ResponseRequest {
@@ -153,7 +153,7 @@ func TestRespond_WeatherTool(t *testing.T) {
 		},
 	}
 
-	res, err := ai.New(completer, "test-model", weather).Respond(context.Background(), basicRequest())
+	res, err := ai.New(completer, "test-model", weather, &mock.DiscordProviderMock{}).Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 	require.Equal(t, "за окном тепло", res.Text)
 
@@ -172,6 +172,76 @@ func TestRespond_WeatherTool(t *testing.T) {
 	}
 	require.Contains(t, toolText, "Москва")
 	require.Contains(t, toolText, "21")
+}
+
+func TestRespond_DiscordTool(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			calls++
+			if calls == 1 {
+				return toolCallResponse("call_1", "get_discord_channels", `{}`), nil
+			}
+
+			return textResponse("в General сидит ernado"), nil
+		},
+	}
+	discord := &mock.DiscordProviderMock{
+		PopulatedChannelsFunc: func(context.Context) ([]lilith.DiscordChannel, error) {
+			return []lilith.DiscordChannel{
+				{
+					ID:    "1",
+					Name:  "General",
+					Guild: "lilith",
+					Members: []lilith.DiscordMember{
+						{ID: "42", Username: "ernado", Nickname: "Aleksandr"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, discord).
+		Respond(context.Background(), basicRequest())
+	require.NoError(t, err)
+	require.Equal(t, "в General сидит ernado", res.Text)
+
+	// The provider was queried once.
+	require.Len(t, discord.PopulatedChannelsCalls(), 1)
+
+	// The serialized channels were fed back to the model on the second call.
+	var toolText string
+	for _, m := range completer.CreateChatCompletionCalls()[1].Request.Messages {
+		if m.Role == openrouter.ChatMessageRoleTool {
+			toolText = m.Content.Text
+		}
+	}
+	require.Contains(t, toolText, "General")
+	require.Contains(t, toolText, "ernado")
+}
+
+// The get_discord_channels tool is only offered to the model when a Discord
+// provider is configured.
+func TestRespond_DiscordToolOmittedWhenNil(t *testing.T) {
+	t.Parallel()
+
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			return textResponse("привет"), nil
+		},
+	}
+
+	_, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil).
+		Respond(context.Background(), basicRequest())
+	require.NoError(t, err)
+
+	for _, tool := range completer.CreateChatCompletionCalls()[0].Request.Tools {
+		if tool.Function != nil {
+			require.NotEqual(t, "get_discord_channels", tool.Function.Name)
+		}
+	}
 }
 
 func TestRespond_UnknownToolIsIgnored(t *testing.T) {

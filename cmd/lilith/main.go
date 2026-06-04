@@ -25,6 +25,7 @@ import (
 	"github.com/ernado/lilith/internal/ai"
 	"github.com/ernado/lilith/internal/bot"
 	"github.com/ernado/lilith/internal/db"
+	"github.com/ernado/lilith/internal/discord"
 	"github.com/ernado/lilith/internal/memory"
 	"github.com/ernado/lilith/internal/scraper"
 	"github.com/ernado/lilith/internal/static"
@@ -167,6 +168,25 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 
 	weatherClient := weather.New(weatherAPIKey, weather.Options{})
 
+	var discordClient lilith.DiscordProvider
+	if discordToken := os.Getenv("DISCORD_TOKEN"); discordToken != "" {
+		dc, err := discord.New(discordToken)
+		if err != nil {
+			return errors.Wrap(err, "create discord client")
+		}
+		if err := dc.Open(ctx); err != nil {
+			return errors.Wrap(err, "open discord")
+		}
+
+		defer func() {
+			_ = dc.Close()
+		}()
+
+		discordClient = dc
+
+		lg.Info("Using discord")
+	}
+
 	var fileStore lilith.FileStore
 	staticAddr := os.Getenv("STATIC_ADDR")
 	staticURL := os.Getenv("STATIC_URL")
@@ -186,7 +206,7 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		})
 	}
 
-	aiClient := ai.New(router, aiModel, weatherClient)
+	aiClient := ai.New(router, aiModel, weatherClient, discordClient)
 	mem := memory.New(database, aiClient)
 	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperService, waiter, t.TracerProvider().Tracer("lilith.bot"))
 	botApp.Register(dispatcher)

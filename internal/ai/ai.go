@@ -46,15 +46,19 @@ type Client struct {
 	ai      ChatCompleter
 	model   string
 	weather lilith.WeatherProvider
+	discord lilith.DiscordProvider
 }
 
-// New returns a Client using the given chat completer, model and weather
-// provider (used for the weather tool).
-func New(ai ChatCompleter, model string, weather lilith.WeatherProvider) *Client {
+// New returns a Client using the given chat completer, model, weather provider
+// (used for the weather tool) and Discord provider (used for the
+// get_discord_channels tool). The Discord provider may be nil, in which case the
+// tool is not offered to the model.
+func New(ai ChatCompleter, model string, weather lilith.WeatherProvider, discord lilith.DiscordProvider) *Client {
 	return &Client{
 		ai:      ai,
 		model:   model,
 		weather: weather,
+		discord: discord,
 	}
 }
 
@@ -78,6 +82,20 @@ func emojiTool() openrouter.Tool {
 					},
 				},
 				Required: []string{"emoji"},
+			},
+		},
+	}
+}
+
+func discordTool() openrouter.Tool {
+	return openrouter.Tool{
+		Type: openrouter.ToolTypeFunction,
+		Function: &openrouter.FunctionDefinition{
+			Name:        "get_discord_channels",
+			Description: "List Discord voice channels that currently have people in them and who is present in each.",
+			Parameters: jsonschema.Definition{
+				Type:       jsonschema.Object,
+				Properties: map[string]jsonschema.Definition{},
 			},
 		},
 	}
@@ -260,6 +278,9 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		weatherTool(),
 		{Type: "openrouter:web_search"},
 	}
+	if c.discord != nil {
+		tools = append(tools, discordTool())
+	}
 
 	model := c.model
 	if req.Model != "" {
@@ -403,6 +424,26 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 					Content:    openrouter.Content{Text: weatherInfo},
 					ToolCallID: tool.ID,
 				})
+
+			case "get_discord_channels":
+				channels, err := c.discord.PopulatedChannels(ctx)
+				if err != nil {
+					return nil, errors.Wrap(err, "get discord channels")
+				}
+
+				content, err := json.Marshal(channels)
+				if err != nil {
+					return nil, errors.Wrap(err, "marshal discord channels")
+				}
+
+				lg.Info("Adding discord channels to dialog", zap.Int("channels", len(channels)))
+
+				dialog = append(dialog, openrouter.ChatCompletionMessage{
+					Role:       openrouter.ChatMessageRoleTool,
+					Content:    openrouter.Content{Text: string(content)},
+					ToolCallID: tool.ID,
+				})
+
 			default:
 				lg.Warn("Unknown function call", zap.String("name", tool.Function.Name))
 			}
