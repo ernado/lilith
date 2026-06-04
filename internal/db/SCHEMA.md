@@ -52,6 +52,10 @@ See THREADS.md.
 | is_creator | BOOLEAN | NOT NULL                                      |
 | rank       | TEXT    | NOT NULL                                      |
 
+Upsert preserves an existing `first_name`, `last_name` or `rank` when the
+incoming value is empty (sparse updates often omit them); `is_admin` and
+`is_creator` always overwrite.
+
 ## chat_notes
 
 | Column  | Type      | Constraints                                   |

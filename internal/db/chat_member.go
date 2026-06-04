@@ -31,13 +31,18 @@ func (db *DB) UpsertChatMember(ctx context.Context, m lilith.ChatMember) error {
 			m.IsCreator,
 			m.Rank,
 		).
+		// Preserve previously-stored first_name, last_name and rank when an
+		// upsert carries an empty value: these often arrive empty from sparse
+		// ("min") user objects or message-path updates and would otherwise
+		// clobber good data. is_admin/is_creator are authoritative booleans and
+		// always overwrite.
 		Suffix(`ON CONFLICT (chat_id, user_id) DO UPDATE SET
 			username   = EXCLUDED.username,
-			first_name = EXCLUDED.first_name,
-			last_name  = EXCLUDED.last_name,
+			first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), chat_members.first_name),
+			last_name  = COALESCE(NULLIF(EXCLUDED.last_name, ''), chat_members.last_name),
 			is_admin   = EXCLUDED.is_admin,
 			is_creator = EXCLUDED.is_creator,
-			rank       = EXCLUDED.rank`)
+			rank       = COALESCE(NULLIF(EXCLUDED.rank, ''), chat_members.rank)`)
 
 	sql, args, err := q.ToSql()
 	if err != nil {

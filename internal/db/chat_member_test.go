@@ -79,6 +79,49 @@ func (suite *ChatMemberTestSuite) TestUpsertChatMember_Update() {
 	suite.Equal(member, *got)
 }
 
+// A later upsert carrying empty first_name, last_name or rank must not clobber
+// values already stored: these often arrive empty from sparse updates.
+func (suite *ChatMemberTestSuite) TestUpsertChatMember_PreservesNamesAndRankOnEmpty() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+	member := lilith.ChatMember{
+		ChatID:    chat.ID,
+		UserID:    42,
+		Username:  "johndoe",
+		FirstName: "John",
+		LastName:  "Doe",
+		IsAdmin:   true,
+		IsCreator: false,
+		Rank:      "moderator",
+	}
+
+	suite.Require().NoError(suite.db.UpsertChatMember(ctx, member))
+
+	// A sparse update: names and rank empty, admin status flips.
+	sparse := lilith.ChatMember{
+		ChatID:    chat.ID,
+		UserID:    42,
+		Username:  "johndoe",
+		FirstName: "",
+		LastName:  "",
+		IsAdmin:   false,
+		IsCreator: false,
+		Rank:      "",
+	}
+
+	suite.Require().NoError(suite.db.UpsertChatMember(ctx, sparse))
+
+	got, err := suite.db.GetChatMember(ctx, member.ChatID, member.UserID)
+	suite.Require().NoError(err)
+
+	// Names and rank are preserved; the authoritative boolean still updates.
+	suite.Equal("John", got.FirstName)
+	suite.Equal("Doe", got.LastName)
+	suite.Equal("moderator", got.Rank)
+	suite.False(got.IsAdmin)
+}
+
 func TestChatMemberTestSuite(t *testing.T) {
 	t.Parallel()
 
