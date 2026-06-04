@@ -437,7 +437,11 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 					return nil, errors.Wrap(err, "marshal discord channels")
 				}
 
-				lg.Info("Adding discord channels to dialog", zap.Int("channels", len(channels)))
+				lg.Info("get_discord_channels result",
+					zap.Int("channels", len(channels)),
+					zap.Any("discord_channels", channels),
+					zap.String("payload", string(content)),
+				)
 
 				dialog = append(dialog, openrouter.ChatCompletionMessage{
 					Role:       openrouter.ChatMessageRoleTool,
