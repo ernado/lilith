@@ -67,11 +67,10 @@ func (c *ImageClient) Generate(ctx context.Context, req lilith.ImageRequest) ([]
 		Messages: []openrouter.ChatCompletionMessage{promptMessage(req)},
 		Modalities: []openrouter.ChatCompletionModality{
 			openrouter.ModalityImage,
-			openrouter.ModalityText,
 		},
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "create chat completion")
+		return nil, errors.Wrapf(err, "create chat completion (model %q)", model)
 	}
 
 	if len(resp.Choices) == 0 {

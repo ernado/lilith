@@ -193,6 +193,40 @@ func keptHistoryImageIndices(req lilith.ResponseRequest) map[int]bool {
 	return keep
 }
 
+// keepAlivePresence sends the presence action immediately and then every second
+// until the returned stop function is called, keeping a chat indicator (e.g.
+// "sending photo") alive during a long operation. A nil action is a no-op.
+func keepAlivePresence(ctx context.Context, lg *zap.Logger, action func(context.Context) error) (stop func()) {
+	if action == nil {
+		return func() {}
+	}
+
+	// Send once synchronously so the indicator appears without a tick of delay.
+	if err := action(ctx); err != nil {
+		lg.Error("Failed to send presence action", zap.Error(err))
+		return func() {}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := action(ctx); err != nil {
+					lg.Error("Failed to send presence action", zap.Error(err))
+					return
+				}
+			}
+		}
+	}()
+
+	return func() { close(done) }
+}
+
 // buildResponseDialog assembles the OpenRouter messages for a reply from the
 // domain request.
 func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletionMessage, error) {
@@ -504,6 +538,10 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 					zap.Bool("reference", req.ImageURL != ""),
 				)
 
+				// Keep the "sending photo" indicator alive for the duration of
+				// generation, which the typing keepalive does not cover.
+				stopPresence := keepAlivePresence(ctx, lg, req.UploadingPhoto)
+
 				// Primary: natural-language generation, with the current message's
 				// image (if any) as the image-to-image reference.
 				images, err := c.image.Generate(ctx, lilith.ImageRequest{
@@ -539,6 +577,8 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 						lg.Warn("Fallback image generation failed", zap.Error(err))
 					}
 				}
+
+				stopPresence()
 
 				result.Images = append(result.Images, images...)
 

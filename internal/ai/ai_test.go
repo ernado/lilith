@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/revrost/go-openrouter"
@@ -383,6 +384,42 @@ func TestRespond_ImageToolFallback(t *testing.T) {
 	require.Len(t, fbCalls, 1)
 	require.Equal(t, "very aesthetic, masterpiece, no text, 1girl, cat", fbCalls[0].Req.Prompt)
 	require.Equal(t, "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, blurry, lowres", fbCalls[0].Req.NegativePrompt)
+}
+
+// While images are generated, the "sending photo" presence callback must fire.
+func TestRespond_ImageToolSendsUploadingPhoto(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			calls++
+			if calls == 1 {
+				return toolCallResponse("call_1", "generate_image",
+					`{"prompt":"a cat","positive_tags":"cat","negative_tags":"blurry"}`), nil
+			}
+
+			return textResponse("вот"), nil
+		},
+	}
+	generator := &mock.ImageGeneratorMock{
+		GenerateFunc: func(context.Context, lilith.ImageRequest) ([]lilith.GeneratedImage, error) {
+			return []lilith.GeneratedImage{{Data: []byte("x"), Format: "png"}}, nil
+		},
+	}
+
+	var uploads atomic.Int64
+	req := basicRequest()
+	req.UploadingPhoto = func(context.Context) error {
+		uploads.Add(1)
+		return nil
+	}
+
+	_, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, generator, nil).
+		Respond(context.Background(), req)
+	require.NoError(t, err)
+
+	require.GreaterOrEqual(t, uploads.Load(), int64(1), "the uploading-photo presence must fire during generation")
 }
 
 // The generate_image tool is only offered to the model when an image generator

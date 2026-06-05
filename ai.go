@@ -29,6 +29,10 @@ type ResponseRequest struct {
 	// Typing, when non-nil, is invoked periodically to keep the chat "typing"
 	// indicator alive during long completions. The caller owns the side effect.
 	Typing func(context.Context) error
+	// UploadingPhoto, when non-nil, is invoked periodically to keep the chat
+	// "sending photo" indicator alive while images are being generated. The
+	// caller owns the side effect.
+	UploadingPhoto func(context.Context) error
 	// Idle, when true, signals that no user message triggered this response.
 	// The bot is sending proactively after a period of inactivity.
 	Idle bool

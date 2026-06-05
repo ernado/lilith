@@ -1487,6 +1487,9 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			Typing: func(ctx context.Context) error {
 				return action.Typing(ctx)
 			},
+			UploadingPhoto: func(ctx context.Context) error {
+				return action.UploadPhoto(ctx, 0)
+			},
 		}
 
 		result, err := a.ai.Respond(ctx, req)
