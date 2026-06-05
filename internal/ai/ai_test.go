@@ -42,7 +42,7 @@ func toolCallResponse(id, name, args string) openrouter.ChatCompletionResponse {
 }
 
 func newClient(completer ai.ChatCompleter) *ai.Client {
-	return ai.New(completer, "test-model", &mock.WeatherProviderMock{}, &mock.DiscordProviderMock{})
+	return ai.New(completer, "test-model", &mock.WeatherProviderMock{}, &mock.DiscordProviderMock{}, nil)
 }
 
 func basicRequest() lilith.ResponseRequest {
@@ -201,7 +201,7 @@ func TestRespond_WeatherTool(t *testing.T) {
 		},
 	}
 
-	res, err := ai.New(completer, "test-model", weather, &mock.DiscordProviderMock{}).Respond(context.Background(), basicRequest())
+	res, err := ai.New(completer, "test-model", weather, &mock.DiscordProviderMock{}, nil).Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 	require.Equal(t, "за окном тепло", res.Text)
 
@@ -251,7 +251,7 @@ func TestRespond_DiscordTool(t *testing.T) {
 		},
 	}
 
-	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, discord).
+	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, discord, nil).
 		Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 	require.Equal(t, "в General сидит ernado", res.Text)
@@ -281,13 +281,74 @@ func TestRespond_DiscordToolOmittedWhenNil(t *testing.T) {
 		},
 	}
 
-	_, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil).
+	_, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, nil).
 		Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 
 	for _, tool := range completer.CreateChatCompletionCalls()[0].Request.Tools {
 		if tool.Function != nil {
 			require.NotEqual(t, "get_discord_channels", tool.Function.Name)
+		}
+	}
+}
+
+func TestRespond_ImageTool(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			calls++
+			if calls == 1 {
+				return toolCallResponse("call_1", "generate_image",
+					`{"positive_prompt":"a cat","negative_prompt":"blurry"}`), nil
+			}
+
+			return textResponse("вот кот"), nil
+		},
+	}
+	generator := &mock.ImageGeneratorMock{
+		GenerateFunc: func(_ context.Context, req lilith.ImageRequest) ([]lilith.GeneratedImage, error) {
+			return []lilith.GeneratedImage{{Data: []byte("png-bytes"), Format: "png"}}, nil
+		},
+	}
+
+	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, generator).
+		Respond(context.Background(), basicRequest())
+	require.NoError(t, err)
+	require.Equal(t, "вот кот", res.Text)
+
+	// The generated image is surfaced on the result for the caller to send.
+	require.Len(t, res.Images, 1)
+	require.Equal(t, []byte("png-bytes"), res.Images[0].Data)
+	require.Equal(t, "png", res.Images[0].Format)
+
+	// The generator was called with the model defaulted to v4.5 full and the
+	// prompts the model supplied.
+	genCalls := generator.GenerateCalls()
+	require.Len(t, genCalls, 1)
+	require.Equal(t, "a cat", genCalls[0].Req.Prompt)
+	require.Equal(t, "blurry", genCalls[0].Req.NegativePrompt)
+	require.Equal(t, lilith.ModelDiffusion45Full, genCalls[0].Req.Model)
+}
+
+// The generate_image tool is only offered to the model when an image generator
+// is configured.
+func TestRespond_ImageToolOmittedWhenNil(t *testing.T) {
+	t.Parallel()
+
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			return textResponse("привет"), nil
+		},
+	}
+
+	_, err := newClient(completer).Respond(context.Background(), basicRequest())
+	require.NoError(t, err)
+
+	for _, tool := range completer.CreateChatCompletionCalls()[0].Request.Tools {
+		if tool.Function != nil {
+			require.NotEqual(t, "generate_image", tool.Function.Name)
 		}
 	}
 }

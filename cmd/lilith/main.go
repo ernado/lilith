@@ -26,6 +26,7 @@ import (
 	"github.com/ernado/lilith/internal/bot"
 	"github.com/ernado/lilith/internal/db"
 	"github.com/ernado/lilith/internal/discord"
+	"github.com/ernado/lilith/internal/image"
 	"github.com/ernado/lilith/internal/memory"
 	"github.com/ernado/lilith/internal/scraper"
 	"github.com/ernado/lilith/internal/static"
@@ -187,6 +188,15 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		lg.Info("Using discord")
 	}
 
+	var imageGenerator lilith.ImageGenerator
+	if novelAIToken := os.Getenv("NOVELAI_TOKEN"); novelAIToken != "" {
+		imageGenerator = image.New(novelAIToken, image.Options{
+			Model: lilith.ModelDiffusion45Full,
+		})
+
+		lg.Info("Using image generation")
+	}
+
 	var fileStore lilith.FileStore
 	staticAddr := os.Getenv("STATIC_ADDR")
 	staticURL := os.Getenv("STATIC_URL")
@@ -206,7 +216,7 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		})
 	}
 
-	aiClient := ai.New(router, aiModel, weatherClient, discordClient)
+	aiClient := ai.New(router, aiModel, weatherClient, discordClient, imageGenerator)
 	mem := memory.New(database, aiClient)
 	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperService, waiter, t.TracerProvider().Tracer("lilith.bot"))
 	botApp.Register(dispatcher)

@@ -47,18 +47,21 @@ type Client struct {
 	model   string
 	weather lilith.WeatherProvider
 	discord lilith.DiscordProvider
+	image   lilith.ImageGenerator
 }
 
 // New returns a Client using the given chat completer, model, weather provider
-// (used for the weather tool) and Discord provider (used for the
-// get_discord_channels tool). The Discord provider may be nil, in which case the
-// tool is not offered to the model.
-func New(ai ChatCompleter, model string, weather lilith.WeatherProvider, discord lilith.DiscordProvider) *Client {
+// (used for the weather tool), Discord provider (used for the
+// get_discord_channels tool) and image generator (used for the generate_image
+// tool). The Discord provider and image generator may be nil, in which case
+// their tools are not offered to the model.
+func New(ai ChatCompleter, model string, weather lilith.WeatherProvider, discord lilith.DiscordProvider, image lilith.ImageGenerator) *Client {
 	return &Client{
 		ai:      ai,
 		model:   model,
 		weather: weather,
 		discord: discord,
+		image:   image,
 	}
 }
 
@@ -96,6 +99,30 @@ func discordTool() openrouter.Tool {
 			Parameters: jsonschema.Definition{
 				Type:       jsonschema.Object,
 				Properties: map[string]jsonschema.Definition{},
+			},
+		},
+	}
+}
+
+func imageTool() openrouter.Tool {
+	return openrouter.Tool{
+		Type: openrouter.ToolTypeFunction,
+		Function: &openrouter.FunctionDefinition{
+			Name:        "generate_image",
+			Description: "Generate an image from a positive prompt (what to draw) and an optional negative prompt (what to avoid). Use comma-separated descriptive tags.",
+			Parameters: jsonschema.Definition{
+				Type: jsonschema.Object,
+				Properties: map[string]jsonschema.Definition{
+					"positive_prompt": {
+						Type:        jsonschema.String,
+						Description: "What the image should contain, as comma-separated tags",
+					},
+					"negative_prompt": {
+						Type:        jsonschema.String,
+						Description: "What the image should avoid, as comma-separated tags",
+					},
+				},
+				Required: []string{"positive_prompt"},
 			},
 		},
 	}
@@ -281,6 +308,9 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 	if c.discord != nil {
 		tools = append(tools, discordTool())
 	}
+	if c.image != nil {
+		tools = append(tools, imageTool())
+	}
 
 	model := c.model
 	if req.Model != "" {
@@ -446,6 +476,50 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				dialog = append(dialog, openrouter.ChatCompletionMessage{
 					Role:       openrouter.ChatMessageRoleTool,
 					Content:    openrouter.Content{Text: string(content)},
+					ToolCallID: tool.ID,
+				})
+
+			case "generate_image":
+				var args struct {
+					PositivePrompt string `json:"positive_prompt"`
+					NegativePrompt string `json:"negative_prompt"`
+				}
+
+				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
+					return nil, errors.Wrap(err, "unmarshal arguments")
+				}
+
+				images, err := c.image.Generate(ctx, lilith.ImageRequest{
+					Prompt:         args.PositivePrompt,
+					NegativePrompt: args.NegativePrompt,
+					Model:          lilith.ModelDiffusion45Full,
+				})
+				if err != nil {
+					return nil, errors.Wrap(err, "generate image")
+				}
+
+				result.Images = append(result.Images, images...)
+
+				lg.Info("generate_image result",
+					zap.String("positive_prompt", args.PositivePrompt),
+					zap.String("negative_prompt", args.NegativePrompt),
+					zap.Int("images", len(images)),
+				)
+
+				toolContent, err := json.Marshal(struct {
+					Generated bool `json:"generated"`
+					Count     int  `json:"count"`
+				}{
+					Generated: len(images) > 0,
+					Count:     len(images),
+				})
+				if err != nil {
+					return nil, errors.Wrap(err, "marshal image result")
+				}
+
+				dialog = append(dialog, openrouter.ChatCompletionMessage{
+					Role:       openrouter.ChatMessageRoleTool,
+					Content:    openrouter.Content{Text: string(toolContent)},
 					ToolCallID: tool.ID,
 				})
 

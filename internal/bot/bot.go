@@ -7,6 +7,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png" // PNG decoder for image.Decode.
 	"math/rand"
 	"os"
 	"strings"
@@ -20,9 +23,11 @@ import (
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/markdown"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	_ "golang.org/x/image/webp" // WebP decoder for image.Decode.
 
 	"github.com/ernado/lilith"
 	"github.com/ernado/lilith/internal/thread"
@@ -1496,6 +1501,37 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			}
 		}
 
+		mediaBuilder := reply
+		if cc.chatType == lilith.ChatTypePrivate {
+			mediaBuilder = &answer.Builder
+		}
+
+		if len(result.Images) > 0 {
+			sentUpdate, err := a.sendImages(ctx, mediaBuilder, result.Images, result.Text)
+			if err != nil {
+				lg.Warn("Failed to send images", zap.Error(err))
+				return nil
+			}
+
+			sentMsg := lilith.Message{
+				ChatID:          cc.chatID,
+				UserID:          a.self.ID,
+				Text:            result.Text,
+				ReplyToID:       lilith.T(int64(m.ID)),
+				IsMyself:        true,
+				MessageThreadID: savedMsg.MessageThreadID,
+			}
+			if cc.chatType == lilith.ChatTypePrivate {
+				sentMsg.ReplyToID = nil
+			}
+
+			if sentUpdate != nil {
+				a.saveSentMessage(ctx, sentUpdate, sentMsg, &savedMsg)
+			}
+
+			return nil
+		}
+
 		if strings.TrimSpace(result.Text) == "" {
 			lg.Warn("Empty response from AI")
 			return nil
@@ -1532,6 +1568,64 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 	}
 
 	return nil
+}
+
+// toJPEG decodes a PNG or WebP image and re-encodes it as JPEG, the format
+// Telegram expects for photos.
+func toJPEG(data []byte) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, errors.Wrap(err, "decode image")
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, errors.Wrap(err, "encode jpeg")
+	}
+
+	return buf.Bytes(), nil
+}
+
+// sendImages uploads and sends generated images via the given builder. The
+// caption, when non-empty, is attached to the first image only. Images are
+// transcoded to JPEG, which Telegram expects for photos. It returns the update
+// of the first (captioned) message so the caller can persist it.
+func (a *App) sendImages(ctx context.Context, b *message.Builder, images []lilith.GeneratedImage, caption string) (tg.UpdatesClass, error) {
+	up := uploader.NewUploader(a.api)
+
+	var captionOpts []message.StyledTextOption
+	if strings.TrimSpace(caption) != "" {
+		captionOpts = append(captionOpts, markdown.String(func(id int64) (tg.InputUserClass, error) {
+			return &tg.InputUser{UserID: id}, nil
+		}, caption))
+	}
+
+	var first tg.UpdatesClass
+	for i, img := range images {
+		data, err := toJPEG(img.Data)
+		if err != nil {
+			return nil, errors.Wrap(err, "convert image to jpeg")
+		}
+
+		f, err := up.FromBytes(ctx, fmt.Sprintf("image_%d.jpg", i), data)
+		if err != nil {
+			return nil, errors.Wrap(err, "upload image")
+		}
+
+		update, err := b.Media(ctx, message.UploadedPhoto(f, captionOpts...))
+		if err != nil {
+			return nil, errors.Wrap(err, "send image")
+		}
+
+		if i == 0 {
+			first = update
+		}
+
+		// Only the first image carries the caption.
+		captionOpts = nil
+	}
+
+	return first, nil
 }
 
 func (a *App) fetchChannelParticipants(ctx context.Context, channel *tg.Channel) error {

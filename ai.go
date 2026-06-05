@@ -42,6 +42,9 @@ type ResponseResult struct {
 	// Reactions are canonical emoji the model chose to react with. The caller
 	// applies them to the current message.
 	Reactions []string
+	// Images are images the model generated via the generate_image tool. The
+	// caller sends them to the chat.
+	Images []GeneratedImage
 }
 
 //go:generate go tool moq -out internal/mock/ai.go -pkg mock . AI
