@@ -1520,12 +1520,26 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 				ChatID:          cc.chatID,
 				UserID:          a.self.ID,
 				Text:            result.Text,
+				ImagePrompt:     result.ImagePrompt,
 				ReplyToID:       lilith.T(int64(m.ID)),
 				IsMyself:        true,
 				MessageThreadID: savedMsg.MessageThreadID,
 			}
 			if cc.chatType == lilith.ChatTypePrivate {
 				sentMsg.ReplyToID = nil
+			}
+
+			// Host the generated image so it is recorded as the message's
+			// image_url and fed back to the model as vision in future context.
+			// The static store serves image/jpeg, so upload the JPEG form.
+			if a.files != nil {
+				if data, err := toJPEG(result.Images[0].Data); err != nil {
+					lg.Warn("Failed to convert generated image for hosting", zap.Error(err))
+				} else if url, err := a.files.Upload(bytes.NewReader(data)); err != nil {
+					lg.Warn("Failed to host generated image", zap.Error(err))
+				} else {
+					sentMsg.ImageURL = url
+				}
 			}
 
 			if sentUpdate != nil {

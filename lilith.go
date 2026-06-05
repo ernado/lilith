@@ -85,7 +85,11 @@ type Message struct {
 	// ImageURL, when non-empty, is a hosted URL of an image attached to this
 	// message. It is excluded from JSON so the raw URL never leaks into the
 	// text payload; the image is supplied to the model as image input instead.
-	ImageURL      string  `json:"-"`
+	ImageURL string `json:"-"`
+	// ImagePrompt, when non-empty, is the prompt the bot used to generate the
+	// image in this message. Unlike ImageURL it is kept in the JSON so the model
+	// can recall it when asked to re-generate.
+	ImagePrompt   string  `json:"image_prompt,omitempty"`
 	ReplyToID     *int64  `json:"reply_to_id,omitempty"`
 	ReplyToText   *string `json:"reply_to_text,omitempty"`
 	ReplyToMyself *bool   `json:"reply_to_myself,omitempty"`

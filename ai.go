@@ -49,6 +49,10 @@ type ResponseResult struct {
 	// Images are images the model generated via the generate_image tool. The
 	// caller sends them to the chat.
 	Images []GeneratedImage
+	// ImagePrompt is the prompt used for the generated images, if any. The
+	// caller persists it on the sent message so the model can recall it for
+	// re-generation.
+	ImagePrompt string
 }
 
 //go:generate go tool moq -out internal/mock/ai.go -pkg mock . AI

@@ -24,6 +24,7 @@
 | text            | TEXT        | NOT NULL                                      |
 | is_myself       | BOOLEAN     | NOT NULL                                      |
 | image_url       | TEXT        | NOT NULL DEFAULT ''                           |
+| image_prompt    | TEXT        | NOT NULL DEFAULT ''                           |
 | reply_to_id     | BIGINT      |                                               |
 | reply_to_text   | TEXT        |                                               |
 | reply_to_myself | BOOLEAN     |                                               |

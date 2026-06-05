@@ -334,6 +334,13 @@ func TestRespond_ImageTool(t *testing.T) {
 	require.Equal(t, []byte("png-bytes"), res.Images[0].Data)
 	require.Equal(t, "png", res.Images[0].Format)
 
+	// The full tool arguments (prompt + tags) are surfaced as JSON so the caller
+	// can persist them for re-generation.
+	require.JSONEq(t,
+		`{"prompt":"a cat sitting on a windowsill","positive_tags":"1girl, cat","negative_tags":"blurry"}`,
+		res.ImagePrompt,
+	)
+
 	// The primary generator was called with the natural-language prompt and the
 	// reference image; the fallback was not needed.
 	genCalls := generator.GenerateCalls()

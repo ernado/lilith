@@ -581,6 +581,15 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				stopPresence()
 
 				result.Images = append(result.Images, images...)
+				if len(images) > 0 {
+					// Persist the full tool arguments (prompt + tags) as JSON so
+					// the model can recall and reuse them for re-generation.
+					if promptJSON, err := json.Marshal(args); err == nil {
+						result.ImagePrompt = string(promptJSON)
+					} else {
+						result.ImagePrompt = args.Prompt
+					}
+				}
 
 				lg.Info("generate_image result",
 					zap.Int("images", len(images)),
