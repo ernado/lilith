@@ -43,25 +43,28 @@ var _ lilith.AI = (*Client)(nil)
 
 // Client is the OpenRouter-backed implementation of lilith.AI.
 type Client struct {
-	ai      ChatCompleter
-	model   string
-	weather lilith.WeatherProvider
-	discord lilith.DiscordProvider
-	image   lilith.ImageGenerator
+	ai            ChatCompleter
+	model         string
+	weather       lilith.WeatherProvider
+	discord       lilith.DiscordProvider
+	image         lilith.ImageGenerator
+	imageFallback lilith.ImageGenerator
 }
 
 // New returns a Client using the given chat completer, model, weather provider
 // (used for the weather tool), Discord provider (used for the
-// get_discord_channels tool) and image generator (used for the generate_image
-// tool). The Discord provider and image generator may be nil, in which case
-// their tools are not offered to the model.
-func New(ai ChatCompleter, model string, weather lilith.WeatherProvider, discord lilith.DiscordProvider, image lilith.ImageGenerator) *Client {
+// get_discord_channels tool), primary image generator and fallback image
+// generator (both used for the generate_image tool). The Discord provider and
+// primary image generator may be nil, in which case their tools are not offered
+// to the model; the fallback may be nil to disable fallback.
+func New(ai ChatCompleter, model string, weather lilith.WeatherProvider, discord lilith.DiscordProvider, image, imageFallback lilith.ImageGenerator) *Client {
 	return &Client{
-		ai:      ai,
-		model:   model,
-		weather: weather,
-		discord: discord,
-		image:   image,
+		ai:            ai,
+		model:         model,
+		weather:       weather,
+		discord:       discord,
+		image:         image,
+		imageFallback: imageFallback,
 	}
 }
 
@@ -109,20 +112,24 @@ func imageTool() openrouter.Tool {
 		Type: openrouter.ToolTypeFunction,
 		Function: &openrouter.FunctionDefinition{
 			Name:        "generate_image",
-			Description: "Generate an image from a positive prompt (what to draw) and an optional negative prompt (what to avoid). Use comma-separated descriptive tags.",
+			Description: "Generate an image. Provide a natural-language description and, separately, booru-style positive and negative tags. The tags are used by a fallback generator if the primary one produces nothing.",
 			Parameters: jsonschema.Definition{
 				Type: jsonschema.Object,
 				Properties: map[string]jsonschema.Definition{
-					"positive_prompt": {
+					"prompt": {
 						Type:        jsonschema.String,
-						Description: "What the image should contain, as comma-separated tags",
+						Description: "A natural-language description of the image to generate, in plain prose",
 					},
-					"negative_prompt": {
+					"positive_tags": {
 						Type:        jsonschema.String,
-						Description: "What the image should avoid, as comma-separated tags",
+						Description: "Comma-separated booru-style tags describing what the image should contain",
+					},
+					"negative_tags": {
+						Type:        jsonschema.String,
+						Description: "Comma-separated booru-style tags describing what the image should avoid",
 					},
 				},
-				Required: []string{"positive_prompt"},
+				Required: []string{"prompt", "positive_tags", "negative_tags"},
 			},
 		},
 	}
@@ -481,28 +488,56 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 
 			case "generate_image":
 				var args struct {
-					PositivePrompt string `json:"positive_prompt"`
-					NegativePrompt string `json:"negative_prompt"`
+					Prompt       string `json:"prompt"`
+					PositiveTags string `json:"positive_tags"`
+					NegativeTags string `json:"negative_tags"`
 				}
 
 				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
 					return nil, errors.Wrap(err, "unmarshal arguments")
 				}
 
+				// Primary: natural-language generation, with the current message's
+				// image (if any) as the image-to-image reference.
 				images, err := c.image.Generate(ctx, lilith.ImageRequest{
-					Prompt:         args.PositivePrompt,
-					NegativePrompt: args.NegativePrompt,
-					Model:          lilith.ModelDiffusion45Full,
+					Prompt:         args.Prompt,
+					ReferenceImage: req.ImageURL,
 				})
 				if err != nil {
-					return nil, errors.Wrap(err, "generate image")
+					lg.Warn("Primary image generation failed", zap.Error(err))
+				}
+
+				// Fallback: when the primary produces nothing, retry with the
+				// tag-based generator using the booru-style tags.
+				if len(images) == 0 && c.imageFallback != nil {
+					lg.Info("Falling back to secondary image generator")
+
+					fallbackPositive := "very aesthetic, masterpiece, no text"
+					if args.PositiveTags != "" {
+						fallbackPositive = fallbackPositive + ", " + args.PositiveTags
+					}
+
+					const fallbackNegative = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page"
+					fallbackNeg := fallbackNegative
+					if args.NegativeTags != "" {
+						fallbackNeg = fallbackNeg + ", " + args.NegativeTags
+					}
+
+					images, err = c.imageFallback.Generate(ctx, lilith.ImageRequest{
+						Prompt:         fallbackPositive,
+						NegativePrompt: fallbackNeg,
+						ReferenceImage: req.ImageURL,
+					})
+					if err != nil {
+						lg.Warn("Fallback image generation failed", zap.Error(err))
+					}
 				}
 
 				result.Images = append(result.Images, images...)
 
 				lg.Info("generate_image result",
-					zap.String("positive_prompt", args.PositivePrompt),
-					zap.String("negative_prompt", args.NegativePrompt),
+					zap.String("prompt", args.Prompt),
+					zap.Bool("reference", req.ImageURL != ""),
 					zap.Int("images", len(images)),
 				)
 

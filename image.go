@@ -27,6 +27,9 @@ type ImageRequest struct {
 	NegativePrompt string
 	// Model, when non-empty, overrides the generator's default model.
 	Model Model
+	// ReferenceImage is the URL of an image to condition generation on
+	// (image-to-image). Empty means a fresh text-to-image generation.
+	ReferenceImage string
 	// Width and Height are the image dimensions in pixels. Zero means the
 	// generator default.
 	Width  int

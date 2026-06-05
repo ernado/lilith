@@ -42,7 +42,7 @@ func toolCallResponse(id, name, args string) openrouter.ChatCompletionResponse {
 }
 
 func newClient(completer ai.ChatCompleter) *ai.Client {
-	return ai.New(completer, "test-model", &mock.WeatherProviderMock{}, &mock.DiscordProviderMock{}, nil)
+	return ai.New(completer, "test-model", &mock.WeatherProviderMock{}, &mock.DiscordProviderMock{}, nil, nil)
 }
 
 func basicRequest() lilith.ResponseRequest {
@@ -201,7 +201,7 @@ func TestRespond_WeatherTool(t *testing.T) {
 		},
 	}
 
-	res, err := ai.New(completer, "test-model", weather, &mock.DiscordProviderMock{}, nil).Respond(context.Background(), basicRequest())
+	res, err := ai.New(completer, "test-model", weather, &mock.DiscordProviderMock{}, nil, nil).Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 	require.Equal(t, "за окном тепло", res.Text)
 
@@ -251,7 +251,7 @@ func TestRespond_DiscordTool(t *testing.T) {
 		},
 	}
 
-	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, discord, nil).
+	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, discord, nil, nil).
 		Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 	require.Equal(t, "в General сидит ernado", res.Text)
@@ -281,7 +281,7 @@ func TestRespond_DiscordToolOmittedWhenNil(t *testing.T) {
 		},
 	}
 
-	_, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, nil).
+	_, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, nil, nil).
 		Respond(context.Background(), basicRequest())
 	require.NoError(t, err)
 
@@ -301,7 +301,7 @@ func TestRespond_ImageTool(t *testing.T) {
 			calls++
 			if calls == 1 {
 				return toolCallResponse("call_1", "generate_image",
-					`{"positive_prompt":"a cat","negative_prompt":"blurry"}`), nil
+					`{"prompt":"a cat sitting on a windowsill","positive_tags":"1girl, cat","negative_tags":"blurry"}`), nil
 			}
 
 			return textResponse("вот кот"), nil
@@ -312,9 +312,19 @@ func TestRespond_ImageTool(t *testing.T) {
 			return []lilith.GeneratedImage{{Data: []byte("png-bytes"), Format: "png"}}, nil
 		},
 	}
+	fallback := &mock.ImageGeneratorMock{
+		GenerateFunc: func(context.Context, lilith.ImageRequest) ([]lilith.GeneratedImage, error) {
+			return nil, nil
+		},
+	}
 
-	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, generator).
-		Respond(context.Background(), basicRequest())
+	// The current message carries an image, which must flow through as a
+	// generation reference.
+	req := basicRequest()
+	req.ImageURL = "https://cdn/current.png"
+
+	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, generator, fallback).
+		Respond(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, "вот кот", res.Text)
 
@@ -323,13 +333,56 @@ func TestRespond_ImageTool(t *testing.T) {
 	require.Equal(t, []byte("png-bytes"), res.Images[0].Data)
 	require.Equal(t, "png", res.Images[0].Format)
 
-	// The generator was called with the model defaulted to v4.5 full and the
-	// prompts the model supplied.
+	// The primary generator was called with the natural-language prompt and the
+	// reference image; the fallback was not needed.
 	genCalls := generator.GenerateCalls()
 	require.Len(t, genCalls, 1)
-	require.Equal(t, "a cat", genCalls[0].Req.Prompt)
-	require.Equal(t, "blurry", genCalls[0].Req.NegativePrompt)
-	require.Equal(t, lilith.ModelDiffusion45Full, genCalls[0].Req.Model)
+	require.Equal(t, "a cat sitting on a windowsill", genCalls[0].Req.Prompt)
+	require.Empty(t, genCalls[0].Req.Model)
+	require.Equal(t, "https://cdn/current.png", genCalls[0].Req.ReferenceImage)
+	require.Empty(t, fallback.GenerateCalls())
+}
+
+// When the primary generator returns no images, the tool falls back to the
+// secondary generator using the booru-style tags.
+func TestRespond_ImageToolFallback(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			calls++
+			if calls == 1 {
+				return toolCallResponse("call_1", "generate_image",
+					`{"prompt":"a cat","positive_tags":"1girl, cat","negative_tags":"blurry, lowres"}`), nil
+			}
+
+			return textResponse("держи"), nil
+		},
+	}
+	primary := &mock.ImageGeneratorMock{
+		GenerateFunc: func(context.Context, lilith.ImageRequest) ([]lilith.GeneratedImage, error) {
+			return nil, nil // produces nothing
+		},
+	}
+	fallback := &mock.ImageGeneratorMock{
+		GenerateFunc: func(_ context.Context, req lilith.ImageRequest) ([]lilith.GeneratedImage, error) {
+			return []lilith.GeneratedImage{{Data: []byte("nai"), Format: "png"}}, nil
+		},
+	}
+
+	res, err := ai.New(completer, "test-model", &mock.WeatherProviderMock{}, nil, primary, fallback).
+		Respond(context.Background(), basicRequest())
+	require.NoError(t, err)
+
+	require.Len(t, res.Images, 1)
+	require.Equal(t, []byte("nai"), res.Images[0].Data)
+
+	// The fallback received the fixed prefixes prepended to the booru-style tags.
+	fbCalls := fallback.GenerateCalls()
+	require.Len(t, fbCalls, 1)
+	require.Equal(t, "very aesthetic, masterpiece, no text, 1girl, cat", fbCalls[0].Req.Prompt)
+	require.Equal(t, "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, blurry, lowres", fbCalls[0].Req.NegativePrompt)
 }
 
 // The generate_image tool is only offered to the model when an image generator

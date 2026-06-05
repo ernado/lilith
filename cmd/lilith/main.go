@@ -189,12 +189,19 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 	}
 
 	var imageGenerator lilith.ImageGenerator
+	if model := os.Getenv("OPENROUTER_IMAGE_MODEL"); model != "" {
+		imageGenerator = ai.NewImageClient(router, model)
+
+		lg.Info("Using OpenRouter image generation", zap.String("model", model))
+	}
+
+	var imageFallback lilith.ImageGenerator
 	if novelAIToken := os.Getenv("NOVELAI_TOKEN"); novelAIToken != "" {
-		imageGenerator = image.New(novelAIToken, image.Options{
+		imageFallback = image.New(novelAIToken, image.Options{
 			Model: lilith.ModelDiffusion45Full,
 		})
 
-		lg.Info("Using image generation")
+		lg.Info("Using NovelAI image fallback")
 	}
 
 	var fileStore lilith.FileStore
@@ -216,7 +223,7 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		})
 	}
 
-	aiClient := ai.New(router, aiModel, weatherClient, discordClient, imageGenerator)
+	aiClient := ai.New(router, aiModel, weatherClient, discordClient, imageGenerator, imageFallback)
 	mem := memory.New(database, aiClient)
 	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperService, waiter, t.TracerProvider().Tracer("lilith.bot"))
 	botApp.Register(dispatcher)
