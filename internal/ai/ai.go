@@ -497,6 +497,13 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 					return nil, errors.Wrap(err, "unmarshal arguments")
 				}
 
+				lg.Info("Generate image",
+					zap.String("positive", args.PositiveTags),
+					zap.String("negative", args.NegativeTags),
+					zap.String("prompt", args.Prompt),
+					zap.Bool("reference", req.ImageURL != ""),
+				)
+
 				// Primary: natural-language generation, with the current message's
 				// image (if any) as the image-to-image reference.
 				images, err := c.image.Generate(ctx, lilith.ImageRequest{
@@ -536,8 +543,6 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 				result.Images = append(result.Images, images...)
 
 				lg.Info("generate_image result",
-					zap.String("prompt", args.Prompt),
-					zap.Bool("reference", req.ImageURL != ""),
 					zap.Int("images", len(images)),
 				)
 
