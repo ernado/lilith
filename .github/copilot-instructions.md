@@ -90,6 +90,21 @@ Do not add double newlines at the end of a file.
 1. Don't create new Markdown or text files, usage examples if noot explicitly requested.
 2. Don't use "Excellent!", "Perfect!", "Great!", "Well done!" or similar phrases.
 
+## Deploy
+
+Generate the binary and copy it to the server.
+Example:
+
+```
+go build -o /tmp/lilith ./cmd/lilith && scp /tmp/lilith cygame:/tmp
+```
+
+Then on cygame:
+
+```
+mv /tmp/lilith /root/lilith/lilith && systemctl restart lilith.service
+```
+
 ## General instructions
 
 From now on, stop being agreeable and act as my brutally honest, high-level advisor and mirror.
