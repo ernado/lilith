@@ -492,6 +492,51 @@ func TestRespond_StopsAfterMaxIterations(t *testing.T) {
 	require.Len(t, res.Reactions, len(calls), "one reaction accumulated per iteration")
 }
 
+// hasImagePart reports whether any message carries an image part.
+func hasImagePart(messages []openrouter.ChatCompletionMessage) bool {
+	for _, m := range messages {
+		for _, p := range m.Content.Multi {
+			if p.Type == openrouter.ChatMessagePartTypeImageURL {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// When the model rejects image input, Respond retries once without the images.
+func TestRespond_RetriesWithoutImagesOnNoImageEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	completer := &mock.ChatCompleterMock{
+		CreateChatCompletionFunc: func(_ context.Context, _ openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+			calls++
+			if calls == 1 {
+				return openrouter.ChatCompletionResponse{},
+					errors.New("No endpoints found that support image input")
+			}
+
+			return textResponse("ок"), nil
+		},
+	}
+
+	req := basicRequest()
+	req.ImageURL = "https://cdn/x.png"
+
+	res, err := newClient(completer).Respond(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, "ок", res.Text)
+
+	recorded := completer.CreateChatCompletionCalls()
+	require.Len(t, recorded, 2)
+
+	// The first attempt carried the image; the retry must not.
+	require.True(t, hasImagePart(recorded[0].Request.Messages), "first attempt should carry the image")
+	require.False(t, hasImagePart(recorded[1].Request.Messages), "retry must drop the image")
+}
+
 func TestRespond_NoChoicesIsError(t *testing.T) {
 	t.Parallel()
 

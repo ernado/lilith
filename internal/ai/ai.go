@@ -169,6 +169,54 @@ func imagePart(url string) openrouter.ChatMessagePart {
 	}
 }
 
+// isNoImageInputError reports whether err is OpenRouter's "no endpoints support
+// image input" rejection, meaning the selected model cannot accept images.
+func isNoImageInputError(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "image input")
+}
+
+// dialogHasImages reports whether any message carries an image part.
+func dialogHasImages(dialog []openrouter.ChatCompletionMessage) bool {
+	for _, m := range dialog {
+		for _, p := range m.Content.Multi {
+			if p.Type == openrouter.ChatMessagePartTypeImageURL {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// stripImages returns the dialog with image parts removed: multi-part messages
+// keep only their text, and image-only messages are dropped.
+func stripImages(dialog []openrouter.ChatCompletionMessage) []openrouter.ChatCompletionMessage {
+	out := make([]openrouter.ChatCompletionMessage, 0, len(dialog))
+	for _, m := range dialog {
+		if len(m.Content.Multi) == 0 {
+			out = append(out, m)
+			continue
+		}
+
+		var texts []string
+		for _, p := range m.Content.Multi {
+			if p.Type == openrouter.ChatMessagePartTypeText {
+				texts = append(texts, p.Text)
+			}
+		}
+
+		if len(texts) == 0 {
+			// Image-only message; nothing left once the image is removed.
+			continue
+		}
+
+		m.Content = openrouter.Content{Text: strings.Join(texts, "\n")}
+		out = append(out, m)
+	}
+
+	return out
+}
+
 // keptHistoryImageIndices returns the set of req.History indices whose image is
 // recent enough to attach to the model context. Only the most recent
 // maxContextImages images are kept, counting the current message's image (if
@@ -386,14 +434,24 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		}
 
 		start := time.Now()
-		resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
+		chatReq := openrouter.ChatCompletionRequest{
 			Model:       model,
 			Messages:    dialog,
 			MaxTokens:   maxTokens,
 			Tools:       tools,
 			ServiceTier: serviceTier,
-		})
+		}
+		resp, err := c.ai.CreateChatCompletion(ctx, chatReq)
 		close(done)
+
+		// Some models/providers reject image input. When that happens, drop the
+		// images from the dialog and retry once without them.
+		if err != nil && isNoImageInputError(err) && dialogHasImages(dialog) {
+			lg.Warn("Model does not support image input; retrying without images", zap.Error(err))
+			dialog = stripImages(dialog)
+			chatReq.Messages = dialog
+			resp, err = c.ai.CreateChatCompletion(ctx, chatReq)
+		}
 
 		if err != nil {
 			lg.Warn("Failed to create completion", zap.Error(err))
