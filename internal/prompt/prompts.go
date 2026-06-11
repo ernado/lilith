@@ -13,3 +13,6 @@ var Notes string
 
 //go:embed idle.md
 var Idle string
+
+//go:embed markdown.md
+var Markdown string
