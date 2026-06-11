@@ -953,7 +953,12 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 
 	sender := message.NewSender(a.api)
 
-	update, err := sender.To(peer).RichMessage(ctx, rich.Markdown(result.Text))
+	richMsg, err := parseRichMarkdown(result.Text)
+	if err != nil {
+		return errors.Wrap(err, "parse idle message")
+	}
+
+	update, err := sender.To(peer).RichMessage(ctx, richMsg)
 	if err != nil {
 		return errors.Wrap(err, "send idle message")
 	}
@@ -1574,7 +1579,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			sentMsg.ReplyToID = nil
 		}
 
-		sentUpdate, err := send(ctx, rich.Markdown(result.Text))
+		richMsg, err := parseRichMarkdown(result.Text)
+		if err != nil {
+			lg.Warn("Failed to parse response markdown", zap.Error(err))
+			return errors.Wrap(err, "parse response")
+		}
+
+		sentUpdate, err := send(ctx, richMsg)
 		if err != nil {
 			lg.Warn("Failed to send response", zap.Error(err))
 			return errors.Wrap(err, "send response")
@@ -1584,6 +1595,18 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 	}
 
 	return nil
+}
+
+// parseRichMarkdown parses the model's Markdown into rich message blocks
+// locally, so the message is sent pre-rendered instead of relying on Telegram's
+// servers to parse the Markdown.
+func parseRichMarkdown(text string) (tg.InputRichMessageClass, error) {
+	blocks, err := rich.ParseMarkdown(strings.NewReader(text))
+	if err != nil {
+		return nil, errors.Wrap(err, "parse markdown")
+	}
+
+	return rich.New(blocks...).Input(), nil
 }
 
 // toJPEG decodes a PNG or WebP image and re-encodes it as JPEG, the format
