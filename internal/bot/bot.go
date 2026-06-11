@@ -23,7 +23,6 @@ import (
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/markdown"
-	"github.com/gotd/td/telegram/message/rich"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"go.opentelemetry.io/otel/trace"
@@ -953,7 +952,7 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 
 	sender := message.NewSender(a.api)
 
-	update, err := sender.To(peer).RichMessage(ctx, rich.Markdown(result.Text))
+	update, err := sender.To(peer).Text(ctx, result.Text)
 	if err != nil {
 		return errors.Wrap(err, "send idle message")
 	}
@@ -1555,6 +1554,10 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return nil
 		}
 
+		styledOptions := markdown.String(func(id int64) (tg.InputUserClass, error) {
+			return &tg.InputUser{UserID: id}, nil
+		}, result.Text)
+
 		// In one-to-one chats there is no need to thread responses as replies;
 		// send directly to the chat instead.
 		sentMsg := lilith.Message{
@@ -1566,15 +1569,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			MessageThreadID: savedMsg.MessageThreadID,
 		}
 
-		// Send as a rich message so the model's Markdown (headings, lists,
-		// tables, quotes, spoilers, math and more) is rendered by Telegram.
-		send := reply.RichMessage
+		send := reply.StyledText
 		if cc.chatType == lilith.ChatTypePrivate {
-			send = answer.RichMessage
+			send = answer.StyledText
 			sentMsg.ReplyToID = nil
 		}
 
-		sentUpdate, err := send(ctx, rich.Markdown(result.Text))
+		sentUpdate, err := send(ctx, styledOptions)
 		if err != nil {
 			lg.Warn("Failed to send response", zap.Error(err))
 			return errors.Wrap(err, "send response")

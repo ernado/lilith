@@ -8,11 +8,11 @@ var Character string
 //go:embed protocol.md
 var Protocol string
 
+//go:embed markdown.md
+var Markdown string
+
 //go:embed notes.md
 var Notes string
 
 //go:embed idle.md
 var Idle string
-
-//go:embed markdown.md
-var Markdown string
