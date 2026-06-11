@@ -11,7 +11,7 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/gotd/contrib v0.21.1
-	github.com/gotd/td v0.149.0
+	github.com/gotd/td v0.150.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/revrost/go-openrouter v1.6.0
 	github.com/spf13/cobra v1.10.2
