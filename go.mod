@@ -11,7 +11,7 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/gotd/contrib v0.21.1
-	github.com/gotd/td v0.151.0
+	github.com/gotd/td v0.152.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/revrost/go-openrouter v1.6.0
 	github.com/spf13/cobra v1.10.2
@@ -29,6 +29,7 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/KimMachineGun/automemlimit v0.7.5 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -96,6 +97,7 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/samber/lo v1.53.0 // indirect
 	github.com/samber/slog-common v0.21.0 // indirect
 	github.com/samber/slog-zap/v2 v2.7.0 // indirect

@@ -278,7 +278,7 @@ func keepAlivePresence(ctx context.Context, lg *zap.Logger, action func(context.
 // buildResponseDialog assembles the OpenRouter messages for a reply from the
 // domain request.
 func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletionMessage, error) {
-	characterParts := []string{prompt.Protocol, prompt.Character}
+	characterParts := []string{prompt.Protocol, prompt.Markdown, prompt.Character}
 	if req.CharacterPrompt != "" {
 		characterParts = append(characterParts, req.CharacterPrompt)
 	}
