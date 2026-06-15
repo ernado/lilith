@@ -10,8 +10,8 @@ require (
 	github.com/go-faster/sdk v0.35.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
-	github.com/gotd/contrib v0.21.1
-	github.com/gotd/td v0.152.0
+	github.com/gotd/contrib v0.24.0
+	github.com/gotd/td v0.154.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/revrost/go-openrouter v1.6.0
 	github.com/spf13/cobra v1.10.2
@@ -42,7 +42,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/dlclark/regexp2 v1.11.5 // indirect
+	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
@@ -58,6 +58,7 @@ require (
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/gotd/ige v0.2.2 // indirect
+	github.com/gotd/log v0.0.1 // indirect
 	github.com/gotd/neo v0.1.5 // indirect
 	github.com/grafana/otel-profiling-go v0.5.3 // indirect
 	github.com/grafana/pyroscope-go v1.3.1 // indirect
@@ -143,10 +144,10 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090 // indirect
-	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	golang.org/x/tools v0.45.0 // indirect
+	golang.org/x/tools v0.46.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.81.1 // indirect
