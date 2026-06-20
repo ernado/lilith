@@ -14,6 +14,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/gotd/contrib/middleware/floodwait"
+	"github.com/gotd/log/logzap"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 	"github.com/revrost/go-openrouter"
@@ -143,7 +144,7 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		return errors.Wrap(err, "create session storage")
 	}
 	client := telegram.NewClient(appID, appHash, telegram.Options{
-		Logger:         zctx.From(ctx).Named("tg"),
+		Logger:         logzap.New(zctx.From(ctx).Named("tg")),
 		TracerProvider: t.TracerProvider(),
 		SessionStorage: sessionStorage,
 		UpdateHandler:  dispatcher,
