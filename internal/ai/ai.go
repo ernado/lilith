@@ -265,7 +265,11 @@ func keepAlivePresence(ctx context.Context, lg *zap.Logger, action func(context.
 				return
 			case <-ticker.C:
 				if err := action(ctx); err != nil {
-					lg.Error("Failed to send presence action", zap.Error(err))
+					// Cancellation is expected once the request completes; do
+					// not surface it as an error.
+					if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+						lg.Error("Failed to send presence action", zap.Error(err))
+					}
 					return
 				}
 			}
@@ -425,7 +429,12 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 						return
 					case <-ticker.C:
 						if err := req.Typing(ctx); err != nil {
-							lg.Error("Failed to send typing action", zap.Error(err))
+							// The request context is canceled once the completion
+							// returns, so a cancellation here is expected shutdown
+							// noise, not a real failure.
+							if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+								lg.Error("Failed to send typing action", zap.Error(err))
+							}
 							return
 						}
 					}
