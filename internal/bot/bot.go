@@ -69,6 +69,11 @@ const (
 	// from the request context so handling the next message cannot cancel it,
 	// but still capped so a hung completion cannot leak the goroutine forever.
 	maintainNotesTimeout = 5 * time.Minute
+
+	// aiResponseTimeout bounds a single AI response request so a hung completion
+	// cannot block the synchronous update dispatcher and stop the bot from
+	// reacting to further messages.
+	aiResponseTimeout = 30 * time.Second
 )
 
 // chatMemberKey is the cache key for a chat member.
@@ -1007,7 +1012,7 @@ func (a *App) deleteChatMessage(ctx context.Context, cc *chatContext, messageID 
 	return err
 }
 
-func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
+func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) (err error) {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
 
@@ -1019,8 +1024,32 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		action = answer.TypingAction()
 	)
 
+	// Recover from handler panics: the update dispatcher runs handlers
+	// synchronously, so an unrecovered panic can take down the whole update
+	// loop and make the bot silently stop reacting to messages.
+	defer func() {
+		if r := recover(); r != nil {
+			lg.Error("Recovered from panic in message handler",
+				zap.Any("panic", r),
+				zap.Stack("stack"),
+			)
+			err = errors.Errorf("panic: %v", r)
+		}
+	}()
+
+	// Bracket handling with start/done logs. Because the dispatcher is
+	// synchronous, a hung call (a stalled AI or Telegram API request) blocks
+	// all further updates; it shows up here as a "Handling message" with no
+	// matching "Handled message".
+	start := time.Now()
+	lg.Info("Handling message")
+	defer func() {
+		lg.Info("Handled message", zap.Duration("elapsed", time.Since(start)))
+	}()
+
 	userID, ok := extractUserID(m)
 	if !ok {
+		lg.Warn("Dropping message: could not extract user id")
 		if _, err := reply.Text(ctx, "Invalid"); err != nil {
 			return err
 		}
@@ -1029,6 +1058,7 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 
 	user := e.Users[userID]
 	if user == nil {
+		lg.Warn("Dropping message: user not present in entities", zap.Int64("user_id", userID))
 		return nil
 	}
 
@@ -1492,10 +1522,22 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			},
 		}
 
-		result, err := a.ai.Respond(ctx, req)
+		lg.Info("Requesting AI response", zap.String("model", chat.Model))
+		aiStart := time.Now()
+
+		respondCtx, cancel := context.WithTimeout(ctx, aiResponseTimeout)
+		result, err := a.ai.Respond(respondCtx, req)
+		cancel()
 		if err != nil {
 			return errors.Wrap(err, "respond")
 		}
+
+		lg.Info("AI response received",
+			zap.Duration("elapsed", time.Since(aiStart)),
+			zap.Int("reactions", len(result.Reactions)),
+			zap.Int("images", len(result.Images)),
+			zap.Int("text_len", len(result.Text)),
+		)
 
 		for _, r := range result.Reactions {
 			lg.Info("Setting reaction to message")
@@ -1750,19 +1792,33 @@ func (a *App) fetchChannelParticipants(ctx context.Context, channel *tg.Channel)
 }
 
 func (a *App) onNewChannelMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewChannelMessage) error {
+	lg := zctx.From(ctx)
+
 	m, ok := u.Message.(*tg.Message)
 	if !ok {
+		lg.Debug("Skipping non-message channel update",
+			zap.String("update_type", fmt.Sprintf("%T", u.Message)),
+		)
 		return nil
 	}
+
+	lg.Info("Received channel message update", zap.Int("msg.id", m.ID))
 
 	return a.onMessage(ctx, e, m, u)
 }
 
 func (a *App) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
+	lg := zctx.From(ctx)
+
 	m, ok := u.Message.(*tg.Message)
 	if !ok {
+		lg.Debug("Skipping non-message update",
+			zap.String("update_type", fmt.Sprintf("%T", u.Message)),
+		)
 		return nil
 	}
+
+	lg.Info("Received message update", zap.Int("msg.id", m.ID))
 
 	return a.onMessage(ctx, e, m, u)
 }
