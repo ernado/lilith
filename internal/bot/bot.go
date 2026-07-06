@@ -1016,12 +1016,16 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
 
+	ctx, cancel := context.WithTimeout(ctx, time.Second*30)
+	defer cancel()
+
 	var (
 		sender = message.NewSender(a.api)
 		reply  = sender.Reply(e, u)
 		lg     = zctx.From(ctx).With(zap.Int("msg.id", m.ID))
 		answer = sender.Answer(e, u)
 		action = answer.TypingAction()
+		start  = time.Now()
 	)
 
 	// Recover from handler panics: the update dispatcher runs handlers
@@ -1041,7 +1045,6 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 	// synchronous, a hung call (a stalled AI or Telegram API request) blocks
 	// all further updates; it shows up here as a "Handling message" with no
 	// matching "Handled message".
-	start := time.Now()
 	lg.Info("Handling message")
 	defer func() {
 		lg.Info("Handled message", zap.Duration("elapsed", time.Since(start)))
