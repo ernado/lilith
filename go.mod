@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/XSAM/otelsql v0.42.0
+	github.com/XSAM/otelsql v0.43.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/go-faster/errors v0.7.1
 	github.com/go-faster/sdk v0.37.0
@@ -146,7 +146,7 @@ require (
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090 // indirect
 	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
