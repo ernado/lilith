@@ -65,8 +65,9 @@ type AI interface {
 	// reply text and any reactions chosen by the model.
 	Respond(ctx context.Context, req ResponseRequest) (*ResponseResult, error)
 	// GenerateNotes summarizes messages into a fresh notes snapshot, given any
-	// existing notes. It returns the generated text, which may be empty.
-	GenerateNotes(ctx context.Context, existing []ChatNote, messages []Message) (string, error)
+	// existing notes. The model is the chat's configured model (empty selects
+	// the default). It returns the generated text, which may be empty.
+	GenerateNotes(ctx context.Context, model string, existing []ChatNote, messages []Message) (string, error)
 	// DefaultModel returns the model name used when no per-chat override is set.
 	DefaultModel() string
 }

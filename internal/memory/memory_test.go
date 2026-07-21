@@ -54,7 +54,7 @@ func newDBMock(s *dbState) *mock.DBMock {
 // newAIMock returns an AI mock whose GenerateNotes always yields text.
 func newAIMock(text string) *mock.AIMock {
 	return &mock.AIMock{
-		GenerateNotesFunc: func(_ context.Context, _ []lilith.ChatNote, _ []lilith.Message) (string, error) {
+		GenerateNotesFunc: func(_ context.Context, _ string, _ []lilith.ChatNote, _ []lilith.Message) (string, error) {
 			return text, nil
 		},
 	}

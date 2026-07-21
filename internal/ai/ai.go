@@ -6,7 +6,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,12 +43,9 @@ var _ lilith.AI = (*Client)(nil)
 
 // Client is the OpenRouter-backed implementation of lilith.AI.
 type Client struct {
-	ai            ChatCompleter
-	model         string
-	weather       lilith.WeatherProvider
-	discord       lilith.DiscordProvider
-	image         lilith.ImageGenerator
-	imageFallback lilith.ImageGenerator
+	ai    ChatCompleter
+	model string
+	tools *toolset
 }
 
 // New returns a Client using the given chat completer, model, weather provider
@@ -59,12 +56,14 @@ type Client struct {
 // to the model; the fallback may be nil to disable fallback.
 func New(ai ChatCompleter, model string, weather lilith.WeatherProvider, discord lilith.DiscordProvider, image, imageFallback lilith.ImageGenerator) *Client {
 	return &Client{
-		ai:            ai,
-		model:         model,
-		weather:       weather,
-		discord:       discord,
-		image:         image,
-		imageFallback: imageFallback,
+		ai:    ai,
+		model: model,
+		tools: &toolset{
+			weather:       weather,
+			discord:       discord,
+			image:         image,
+			imageFallback: imageFallback,
+		},
 	}
 }
 
@@ -173,6 +172,97 @@ func imagePart(url string) openrouter.ChatMessagePart {
 // image input" rejection, meaning the selected model cannot accept images.
 func isNoImageInputError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "image input")
+}
+
+// isGeminiModel reports whether model is a Google Gemini model. Gemini (via
+// Google AI Studio) rejects requests that combine server-side built-in tools
+// with function-calling tools, so the web_search tool is withheld from it.
+func isGeminiModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "gemini")
+}
+
+// APIFailure is a user-renderable summary of an upstream model or provider
+// failure extracted from an OpenRouter API error.
+type APIFailure struct {
+	// StatusCode is the HTTP (or provider) status code, when known (e.g. 429).
+	StatusCode int
+	// Provider is the upstream provider name (e.g. "Google AI Studio"), when known.
+	Provider string
+	// Message is the human-readable provider message, when known.
+	Message string
+	// RateLimited reports whether the failure is an upstream rate limit (429).
+	RateLimited bool
+}
+
+// AsAPIFailure extracts an APIFailure from err when it carries an OpenRouter API
+// or request error. It returns false when err is not provider-related (e.g. a
+// context cancellation or a local failure), so the caller can distinguish a
+// remote model failure from an internal one.
+func AsAPIFailure(err error) (APIFailure, bool) {
+	var f APIFailure
+	var found bool
+
+	// A RequestError carries the transport-level status code (e.g. 429) and may
+	// wrap the APIError below.
+	var reqErr *openrouter.RequestError
+	if errors.As(err, &reqErr) {
+		f.StatusCode = reqErr.HTTPStatusCode
+		found = true
+	}
+
+	// An APIError carries the structured provider metadata.
+	var apiErr *openrouter.APIError
+	if errors.As(err, &apiErr) {
+		found = true
+		if f.StatusCode == 0 {
+			f.StatusCode = apiErr.HTTPStatusCode
+		}
+		f.Message = apiErr.Message
+		if m := apiErr.Metadata; m != nil {
+			if name, ok := (*m)["provider_name"].(string); ok {
+				f.Provider = name
+			}
+			if raw, ok := (*m)["raw"].(string); ok && strings.TrimSpace(raw) != "" {
+				f.Message = raw
+			}
+			if f.StatusCode == 0 {
+				f.StatusCode = metadataStatusCode(*m)
+			}
+		}
+	}
+
+	if !found {
+		return APIFailure{}, false
+	}
+
+	f.RateLimited = f.StatusCode == 429
+
+	return f, true
+}
+
+// metadataStatusCode extracts the provider_error_code from error metadata,
+// which OpenRouter may deliver as a number or a string.
+func metadataStatusCode(m openrouter.Metadata) int {
+	code, ok := m["provider_error_code"]
+	if !ok {
+		return 0
+	}
+
+	switch v := code.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0
+		}
+
+		return n
+	default:
+		return 0
+	}
 }
 
 // dialogHasImages reports whether any message carries an image part.
@@ -383,6 +473,39 @@ func buildResponseDialog(req lilith.ResponseRequest) ([]openrouter.ChatCompletio
 	return dialog, nil
 }
 
+// buildNotesDialog assembles the OpenRouter messages for a notes-summary
+// request. It is provider-agnostic prompt assembly, translated per backend.
+func buildNotesDialog(existing []lilith.ChatNote, messages []lilith.Message) ([]openrouter.ChatCompletionMessage, error) {
+	dialog := []openrouter.ChatCompletionMessage{
+		openrouter.SystemMessage(strings.Join([]string{
+			prompt.Character,
+			prompt.Notes,
+		}, "\n")),
+	}
+
+	if len(existing) > 0 {
+		var noteLines []string
+		for _, n := range existing {
+			noteLines = append(noteLines, n.Text)
+		}
+		dialog = append(dialog, openrouter.UserMessage(
+			"Текущая память о чате:\n"+strings.Join(noteLines, "\n"),
+		))
+	}
+
+	for _, msg := range messages {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return nil, errors.Wrap(err, "marshal message")
+		}
+		dialog = append(dialog, openrouter.UserMessage(string(data)))
+	}
+
+	dialog = append(dialog, openrouter.UserMessage("Верни полный обновлённый список заметок"))
+
+	return dialog, nil
+}
+
 // Respond runs the completion loop, handling tool calls until the model
 // produces a text reply or the iteration limit is hit.
 func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lilith.ResponseResult, error) {
@@ -393,21 +516,30 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		return nil, err
 	}
 
-	tools := []openrouter.Tool{
-		emojiTool(),
-		weatherTool(),
-		{Type: "openrouter:web_search"},
-	}
-	if c.discord != nil {
-		tools = append(tools, discordTool())
-	}
-	if c.image != nil {
-		tools = append(tools, imageTool())
-	}
-
 	model := c.model
 	if req.Model != "" {
 		model = req.Model
+	}
+
+	tools := []openrouter.Tool{
+		emojiTool(),
+		weatherTool(),
+	}
+
+	// Gemini (via Google AI Studio) rejects any request that combines a
+	// server-side built-in tool with function-calling tools, and the required
+	// opt-in flag (tool_config.include_server_side_tool_invocations) is not
+	// plumbable through OpenRouter. So the web_search tool is only offered to
+	// non-Gemini models; on Gemini it would make every completion fail with 400.
+	if !isGeminiModel(model) {
+		tools = append(tools, openrouter.Tool{Type: "openrouter:web_search"})
+	}
+
+	if c.tools.discord != nil {
+		tools = append(tools, discordTool())
+	}
+	if c.tools.image != nil {
+		tools = append(tools, imageTool())
 	}
 
 	result := &lilith.ResponseResult{}
@@ -450,6 +582,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			Tools:       tools,
 			ServiceTier: serviceTier,
 		}
+
 		resp, err := c.ai.CreateChatCompletion(ctx, chatReq)
 		close(done)
 
@@ -495,193 +628,21 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 
 		for _, tool := range msg.ToolCalls {
 			lg.Info("Function call", zap.String("id", tool.ID))
-			switch tool.Function.Name {
-			case "reply_emoji":
-				var args struct {
-					Emoji string `json:"emoji"`
-				}
 
-				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
-					return nil, errors.Wrap(err, "unmarshal arguments")
-				}
-
-				toolContent, err := json.Marshal(struct {
-					Emoji string `json:"reply_emoji"`
-				}{
-					Emoji: args.Emoji,
-				})
-				if err != nil {
-					return nil, errors.Wrap(err, "marshal emoji")
-				}
-
-				dialog = append(dialog, openrouter.ChatCompletionMessage{
-					Role:       openrouter.ChatMessageRoleTool,
-					Content:    openrouter.Content{Text: string(toolContent)},
-					ToolCallID: tool.ID,
-				})
-
-				if text, ok := reaction.Canonicalize(args.Emoji); ok {
-					result.Reactions = append(result.Reactions, text)
-				}
-
-			case "get_weather":
-				var args struct {
-					City        string `json:"city"`
-					CountryCode string `json:"country_code"`
-				}
-
-				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
-					return nil, errors.Wrap(err, "unmarshal arguments")
-				}
-
-				info, err := c.weather.Current(ctx, args.City, args.CountryCode)
-				if err != nil {
-					return nil, errors.Wrap(err, "get weather")
-				}
-
-				desc := args.City
-				if info.Description != "" {
-					desc = info.Description
-				}
-
-				weatherInfo := fmt.Sprintf(
-					"Погода в %s (%s): %s, %d °C, ощущается как %d °C, влажность %d%%, ветер %d м/с %s",
-					info.LocationName,
-					info.Country,
-					desc,
-					info.Temperature,
-					info.FeelsLike,
-					info.Humidity,
-					info.WindSpeed,
-					info.WindDir,
-				)
-
-				lg.Info("Adding weather info to dialog", zap.String("weather_info", weatherInfo))
-
-				dialog = append(dialog, openrouter.ChatCompletionMessage{
-					Role:       openrouter.ChatMessageRoleTool,
-					Content:    openrouter.Content{Text: weatherInfo},
-					ToolCallID: tool.ID,
-				})
-
-			case "get_discord_channels":
-				channels, err := c.discord.PopulatedChannels(ctx)
-				if err != nil {
-					return nil, errors.Wrap(err, "get discord channels")
-				}
-
-				content, err := json.Marshal(channels)
-				if err != nil {
-					return nil, errors.Wrap(err, "marshal discord channels")
-				}
-
-				lg.Info("get_discord_channels result",
-					zap.Int("channels", len(channels)),
-					zap.Any("discord_channels", channels),
-					zap.String("payload", string(content)),
-				)
-
-				dialog = append(dialog, openrouter.ChatCompletionMessage{
-					Role:       openrouter.ChatMessageRoleTool,
-					Content:    openrouter.Content{Text: string(content)},
-					ToolCallID: tool.ID,
-				})
-
-			case "generate_image":
-				var args struct {
-					Prompt       string `json:"prompt"`
-					PositiveTags string `json:"positive_tags"`
-					NegativeTags string `json:"negative_tags"`
-				}
-
-				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
-					return nil, errors.Wrap(err, "unmarshal arguments")
-				}
-
-				lg.Info("Generate image",
-					zap.String("positive", args.PositiveTags),
-					zap.String("negative", args.NegativeTags),
-					zap.String("prompt", args.Prompt),
-					zap.Bool("reference", req.ImageURL != ""),
-				)
-
-				// Keep the "sending photo" indicator alive for the duration of
-				// generation, which the typing keepalive does not cover.
-				stopPresence := keepAlivePresence(ctx, lg, req.UploadingPhoto)
-
-				// Primary: natural-language generation, with the current message's
-				// image (if any) as the image-to-image reference.
-				images, err := c.image.Generate(ctx, lilith.ImageRequest{
-					Prompt:         args.Prompt,
-					ReferenceImage: req.ImageURL,
-				})
-				if err != nil {
-					lg.Warn("Primary image generation failed", zap.Error(err))
-				}
-
-				// Fallback: when the primary produces nothing, retry with the
-				// tag-based generator using the booru-style tags.
-				if len(images) == 0 && c.imageFallback != nil {
-					lg.Info("Falling back to secondary image generator")
-
-					fallbackPositive := "very aesthetic, masterpiece, no text"
-					if args.PositiveTags != "" {
-						fallbackPositive = fallbackPositive + ", " + args.PositiveTags
-					}
-
-					const fallbackNegative = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page"
-					fallbackNeg := fallbackNegative
-					if args.NegativeTags != "" {
-						fallbackNeg = fallbackNeg + ", " + args.NegativeTags
-					}
-
-					images, err = c.imageFallback.Generate(ctx, lilith.ImageRequest{
-						Prompt:         fallbackPositive,
-						NegativePrompt: fallbackNeg,
-						ReferenceImage: req.ImageURL,
-					})
-					if err != nil {
-						lg.Warn("Fallback image generation failed", zap.Error(err))
-					}
-				}
-
-				stopPresence()
-
-				result.Images = append(result.Images, images...)
-				if len(images) > 0 {
-					// Persist the full tool arguments (prompt + tags) as JSON so
-					// the model can recall and reuse them for re-generation.
-					if promptJSON, err := json.Marshal(args); err == nil {
-						result.ImagePrompt = string(promptJSON)
-					} else {
-						result.ImagePrompt = args.Prompt
-					}
-				}
-
-				lg.Info("generate_image result",
-					zap.Int("images", len(images)),
-				)
-
-				toolContent, err := json.Marshal(struct {
-					Generated bool `json:"generated"`
-					Count     int  `json:"count"`
-				}{
-					Generated: len(images) > 0,
-					Count:     len(images),
-				})
-				if err != nil {
-					return nil, errors.Wrap(err, "marshal image result")
-				}
-
-				dialog = append(dialog, openrouter.ChatCompletionMessage{
-					Role:       openrouter.ChatMessageRoleTool,
-					Content:    openrouter.Content{Text: string(toolContent)},
-					ToolCallID: tool.ID,
-				})
-
-			default:
-				lg.Warn("Unknown function call", zap.String("name", tool.Function.Name))
+			content, ok, err := c.tools.execute(ctx, lg, req, result, tool.Function.Name, json.RawMessage(tool.Function.Arguments))
+			if err != nil {
+				return nil, err
 			}
+			if !ok {
+				// Unknown tool: nothing to feed back to the model.
+				continue
+			}
+
+			dialog = append(dialog, openrouter.ChatCompletionMessage{
+				Role:       openrouter.ChatMessageRoleTool,
+				Content:    openrouter.Content{Text: content},
+				ToolCallID: tool.ID,
+			})
 		}
 
 		// Only loop again when the model called a tool but produced no text yet.
@@ -698,37 +659,20 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 	return result, nil
 }
 
-// GenerateNotes summarizes messages into a fresh notes snapshot.
-func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
-	dialog := []openrouter.ChatCompletionMessage{
-		openrouter.SystemMessage(strings.Join([]string{
-			prompt.Character,
-			prompt.Notes,
-		}, "\n")),
+// GenerateNotes summarizes messages into a fresh notes snapshot. The model, when
+// non-empty, overrides the default model for this request.
+func (c *Client) GenerateNotes(ctx context.Context, model string, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
+	if model == "" {
+		model = c.model
 	}
 
-	if len(existing) > 0 {
-		var noteLines []string
-		for _, n := range existing {
-			noteLines = append(noteLines, n.Text)
-		}
-		dialog = append(dialog, openrouter.UserMessage(
-			"Текущая память о чате:\n"+strings.Join(noteLines, "\n"),
-		))
+	dialog, err := buildNotesDialog(existing, messages)
+	if err != nil {
+		return "", err
 	}
-
-	for _, msg := range messages {
-		data, err := json.Marshal(msg)
-		if err != nil {
-			return "", errors.Wrap(err, "marshal message")
-		}
-		dialog = append(dialog, openrouter.UserMessage(string(data)))
-	}
-
-	dialog = append(dialog, openrouter.UserMessage("Верни полный обновлённый список заметок"))
 
 	resp, err := c.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-		Model:       c.model,
+		Model:       model,
 		Messages:    dialog,
 		MaxTokens:   maxNotesTokens,
 		ServiceTier: openrouter.ServiceTierFlex,

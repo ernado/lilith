@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/genai"
 
 	"github.com/ernado/lilith"
 	"github.com/ernado/lilith/internal/ai"
@@ -225,8 +226,26 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 	}
 
 	aiClient := ai.New(router, aiModel, weatherClient, discordClient, imageGenerator, imageFallback)
-	mem := memory.New(database, aiClient)
-	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperService, waiter, t.TracerProvider().Tracer("lilith.bot"))
+
+	// Google models are served by the native go-genai backend (so built-in
+	// Google Search can be combined with function calling); everything else
+	// stays on OpenRouter. Without a key, the router is a pass-through.
+	var googleClient *genai.Client
+	if key := os.Getenv("GEMINI_API_KEY"); key != "" {
+		googleClient, err = genai.NewClient(ctx, &genai.ClientConfig{
+			APIKey:  key,
+			Backend: genai.BackendGeminiAPI,
+		})
+		if err != nil {
+			return errors.Wrap(err, "create genai client")
+		}
+
+		lg.Info("Using go-genai for Google models")
+	}
+
+	aiService := ai.NewRouter(aiClient, googleClient)
+	mem := memory.New(database, aiService)
+	botApp := bot.New(client, database, aiService, mem, fileStore, scraperService, waiter, t.TracerProvider().Tracer("lilith.bot"))
 	botApp.Register(dispatcher)
 
 	if staticServer != nil {

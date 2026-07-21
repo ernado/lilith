@@ -578,3 +578,46 @@ func TestRespond_TrimsLeadingTrailingEmoji(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "привет", res.Text)
 }
+
+func TestAsAPIFailure(t *testing.T) {
+	t.Run("NotProviderError", func(t *testing.T) {
+		_, ok := ai.AsAPIFailure(errors.New("boom"))
+		require.False(t, ok)
+	})
+
+	t.Run("RequestWrappingAPIError", func(t *testing.T) {
+		// Mirrors the real OpenRouter shape: a RequestError carrying the 429
+		// status wraps an APIError holding the provider metadata.
+		apiErr := &openrouter.APIError{
+			Message: "Provider returned error",
+			Metadata: &openrouter.Metadata{
+				"provider_name":       "Google AI Studio",
+				"provider_error_code": float64(429),
+				"raw":                 "google/gemini-3.6-flash is temporarily rate-limited upstream.",
+			},
+		}
+		reqErr := &openrouter.RequestError{HTTPStatusCode: 429, Err: apiErr}
+
+		f, ok := ai.AsAPIFailure(errors.New("wrap: " + reqErr.Error()))
+		require.False(t, ok, "plain string must not match")
+
+		f, ok = ai.AsAPIFailure(reqErr)
+		require.True(t, ok)
+		require.Equal(t, 429, f.StatusCode)
+		require.True(t, f.RateLimited)
+		require.Equal(t, "Google AI Studio", f.Provider)
+		require.Equal(t, "google/gemini-3.6-flash is temporarily rate-limited upstream.", f.Message)
+	})
+
+	t.Run("StatusFromMetadataCode", func(t *testing.T) {
+		apiErr := &openrouter.APIError{
+			Message:  "Provider returned error",
+			Metadata: &openrouter.Metadata{"provider_error_code": "503"},
+		}
+
+		f, ok := ai.AsAPIFailure(apiErr)
+		require.True(t, ok)
+		require.Equal(t, 503, f.StatusCode)
+		require.False(t, f.RateLimited)
+	})
+}

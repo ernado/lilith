@@ -104,7 +104,14 @@ func (m *Memory) doGenerateNotes(ctx context.Context, chatID, currentMsgID int64
 		return errors.Wrap(err, "get chat notes")
 	}
 
-	text, err := m.ai.GenerateNotes(ctx, existingNotes, lastMessages)
+	// Generate notes with the chat's configured model rather than the default,
+	// so a chat that overrode its model summarizes with that same model.
+	chat, err := m.db.GetChat(ctx, chatID)
+	if err != nil {
+		return errors.Wrap(err, "get chat")
+	}
+
+	text, err := m.ai.GenerateNotes(ctx, chat.Model, existingNotes, lastMessages)
 	if err != nil {
 		return errors.Wrap(err, "generate notes")
 	}

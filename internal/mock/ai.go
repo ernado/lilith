@@ -22,7 +22,7 @@ var _ lilith.AI = &AIMock{}
 //			DefaultModelFunc: func() string {
 //				panic("mock out the DefaultModel method")
 //			},
-//			GenerateNotesFunc: func(ctx context.Context, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
+//			GenerateNotesFunc: func(ctx context.Context, model string, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
 //				panic("mock out the GenerateNotes method")
 //			},
 //			RespondFunc: func(ctx context.Context, req lilith.ResponseRequest) (*lilith.ResponseResult, error) {
@@ -39,7 +39,7 @@ type AIMock struct {
 	DefaultModelFunc func() string
 
 	// GenerateNotesFunc mocks the GenerateNotes method.
-	GenerateNotesFunc func(ctx context.Context, existing []lilith.ChatNote, messages []lilith.Message) (string, error)
+	GenerateNotesFunc func(ctx context.Context, model string, existing []lilith.ChatNote, messages []lilith.Message) (string, error)
 
 	// RespondFunc mocks the Respond method.
 	RespondFunc func(ctx context.Context, req lilith.ResponseRequest) (*lilith.ResponseResult, error)
@@ -53,6 +53,8 @@ type AIMock struct {
 		GenerateNotes []struct {
 			// Ctx is the ctx argument value.
 			Ctx context.Context
+			// Model is the model argument value.
+			Model string
 			// Existing is the existing argument value.
 			Existing []lilith.ChatNote
 			// Messages is the messages argument value.
@@ -99,23 +101,25 @@ func (mock *AIMock) DefaultModelCalls() []struct {
 }
 
 // GenerateNotes calls GenerateNotesFunc.
-func (mock *AIMock) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
+func (mock *AIMock) GenerateNotes(ctx context.Context, model string, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
 	if mock.GenerateNotesFunc == nil {
 		panic("AIMock.GenerateNotesFunc: method is nil but AI.GenerateNotes was just called")
 	}
 	callInfo := struct {
 		Ctx      context.Context
+		Model    string
 		Existing []lilith.ChatNote
 		Messages []lilith.Message
 	}{
 		Ctx:      ctx,
+		Model:    model,
 		Existing: existing,
 		Messages: messages,
 	}
 	mock.lockGenerateNotes.Lock()
 	mock.calls.GenerateNotes = append(mock.calls.GenerateNotes, callInfo)
 	mock.lockGenerateNotes.Unlock()
-	return mock.GenerateNotesFunc(ctx, existing, messages)
+	return mock.GenerateNotesFunc(ctx, model, existing, messages)
 }
 
 // GenerateNotesCalls gets all the calls that were made to GenerateNotes.
@@ -124,11 +128,13 @@ func (mock *AIMock) GenerateNotes(ctx context.Context, existing []lilith.ChatNot
 //	len(mockedAI.GenerateNotesCalls())
 func (mock *AIMock) GenerateNotesCalls() []struct {
 	Ctx      context.Context
+	Model    string
 	Existing []lilith.ChatNote
 	Messages []lilith.Message
 } {
 	var calls []struct {
 		Ctx      context.Context
+		Model    string
 		Existing []lilith.ChatNote
 		Messages []lilith.Message
 	}

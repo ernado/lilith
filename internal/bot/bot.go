@@ -12,6 +12,7 @@ import (
 	_ "image/png" // PNG decoder for image.Decode.
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/markdown"
+	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"go.opentelemetry.io/otel/trace"
@@ -30,6 +32,7 @@ import (
 	_ "golang.org/x/image/webp" // WebP decoder for image.Decode.
 
 	"github.com/ernado/lilith"
+	"github.com/ernado/lilith/internal/ai"
 	"github.com/ernado/lilith/internal/thread"
 )
 
@@ -1532,7 +1535,21 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		result, err := a.ai.Respond(respondCtx, req)
 		cancel()
 		if err != nil {
-			return errors.Wrap(err, "respond")
+			// A failed completion (rate limit, provider outage, timeout) must not
+			// leave the user staring at silence. Surface a rich, human-readable
+			// error in the chat instead of only logging it.
+			lg.Warn("AI response failed", zap.Error(err))
+
+			send := reply.StyledText
+			if cc.chatType == lilith.ChatTypePrivate {
+				send = answer.StyledText
+			}
+
+			if sendErr := sendAIError(ctx, send, err); sendErr != nil {
+				return errors.Wrap(sendErr, "send ai error")
+			}
+
+			return nil
 		}
 
 		lg.Info("AI response received",
@@ -1627,6 +1644,46 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		}
 
 		a.saveSentMessage(ctx, sentUpdate, sentMsg, &savedMsg)
+	}
+
+	return nil
+}
+
+// sendAIError renders a failed AI completion as a rich, styled message and
+// sends it via send (reply or answer). When err carries a structured provider
+// failure, the provider, status code and message are surfaced; otherwise a
+// generic internal-error notice is shown.
+func sendAIError(ctx context.Context, send func(context.Context, ...styling.StyledTextOption) (tg.UpdatesClass, error), err error) error {
+	opts := []styling.StyledTextOption{
+		styling.Bold("⚠️ Не удалось получить ответ от модели"),
+		styling.Plain("\n"),
+	}
+
+	if f, ok := ai.AsAPIFailure(err); ok {
+		switch {
+		case f.RateLimited:
+			opts = append(opts, styling.Plain("Провайдер временно ограничивает запросы. Попробуй ещё раз через минуту.\n"))
+		default:
+			opts = append(opts, styling.Plain("Провайдер вернул ошибку. Попробуй ещё раз позже.\n"))
+		}
+
+		if f.Provider != "" {
+			opts = append(opts, styling.Plain("Провайдер: "), styling.Code(f.Provider), styling.Plain("\n"))
+		}
+
+		if f.StatusCode != 0 {
+			opts = append(opts, styling.Plain("Код: "), styling.Code(strconv.Itoa(f.StatusCode)), styling.Plain("\n"))
+		}
+
+		if msg := strings.TrimSpace(f.Message); msg != "" {
+			opts = append(opts, styling.Blockquote(msg, true))
+		}
+	} else {
+		opts = append(opts, styling.Plain("Внутренняя ошибка. Попробуй ещё раз позже."))
+	}
+
+	if _, err := send(ctx, opts...); err != nil {
+		return errors.Wrap(err, "send styled text")
 	}
 
 	return nil
