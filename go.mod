@@ -23,7 +23,7 @@ require (
 	golang.org/x/image v0.43.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
-	google.golang.org/genai v1.64.0
+	google.golang.org/genai v1.65.0
 )
 
 require (
